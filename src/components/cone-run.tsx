@@ -20,6 +20,8 @@ const CAUSE: Record<Cause, { title: string; line: string }> = {
   barrier: { title: "Barricade.", line: "Jersey barrier, one. You, zero." },
   scaffold: { title: "Échafaudage.", line: "That beam was not a suggestion." },
   truck: { title: "Truck.", line: "It was parked. You were not." },
+  pillar: { title: "Colonne.", line: "That one holds the tunnel up." },
+  sign: { title: "Enseigne.", line: "Slide. The métro does not duck." },
 };
 
 function fmt(n: number) {
