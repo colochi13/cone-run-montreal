@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import { glassTexture } from "./textures";
+import { glassTexture, type FacadeStyle } from "./textures";
 
 /**
  * Procedural Montréal landmarks. Everything is modelled in real-world metres and the caller scales
@@ -472,4 +472,344 @@ export function buildLandmarks(rng: Rng): Landmarks {
       wm.roughness = 0.12 + Math.sin(t * 0.7) * 0.02;
     },
   };
+}
+
+// ---------------------------------------------------------------- Distance stages
+//
+// The street the player is on, not the far skyline. Early Plateau triplexes, then a
+// downtown canyon, then the métro (no buildings — the tunnel lives in the engine).
+
+/** Triplexes line the street until here. Downtown occupies the gap before the métro. */
+export const TRIPLEX_UNTIL_M = 480;
+/** The run drops into the tunnel at this metre mark. */
+export const SUBWAY_AT_M = 1100;
+/** Crossfade width at each boundary, in metres. Chunks flip inside this window. */
+export const STAGE_BLEND_M = 80;
+
+export type EnvStage = "triplex" | "downtown" | "subway";
+
+export type EnvAt = {
+  /** Stage in force at the start of a blend. */
+  stage: EnvStage;
+  /** Stage being blended toward. Same as `stage` outside a blend window. */
+  toward: EnvStage;
+  /** 0 = fully `stage`, 1 = fully `toward`. */
+  t: number;
+};
+
+function clamp01(v: number) {
+  return Math.min(1, Math.max(0, v));
+}
+
+/** Which street stage is in force at a distance travelled, plus the blend across a boundary. */
+export function envAt(meters: number): EnvAt {
+  const half = STAGE_BLEND_M / 2;
+  if (meters < TRIPLEX_UNTIL_M - half) return { stage: "triplex", toward: "triplex", t: 0 };
+  if (meters < TRIPLEX_UNTIL_M + half) {
+    return {
+      stage: "triplex",
+      toward: "downtown",
+      t: clamp01((meters - (TRIPLEX_UNTIL_M - half)) / STAGE_BLEND_M),
+    };
+  }
+  if (meters < SUBWAY_AT_M - half) return { stage: "downtown", toward: "downtown", t: 0 };
+  if (meters < SUBWAY_AT_M + half) {
+    return {
+      stage: "downtown",
+      toward: "subway",
+      t: clamp01((meters - (SUBWAY_AT_M - half)) / STAGE_BLEND_M),
+    };
+  }
+  return { stage: "subway", toward: "subway", t: 0 };
+}
+
+/** 0 on the street, 1 once the tunnel has fully taken over. */
+export function subwayAmount(env: EnvAt) {
+  if (env.stage === "subway" && env.toward === "subway") return 1;
+  if (env.toward === "subway") return env.t;
+  if (env.stage === "subway") return 1 - env.t;
+  return 0;
+}
+
+/** 0 = all triplexes, 1 = all downtown towers (buildings hide once the tunnel is in). */
+export function downtownAmount(env: EnvAt) {
+  if (env.toward === "subway" || env.stage === "subway" || env.stage === "downtown") return 1;
+  if (env.toward === "downtown") return env.t;
+  return 0;
+}
+
+export type StreetLot = {
+  triplex: THREE.Group;
+  downtown: THREE.Group;
+  /** Local z of the lot centre along the chunk. */
+  z: number;
+  index: number;
+  n: number;
+};
+
+type MeshKit = {
+  geo<T extends THREE.BufferGeometry>(g: T): T;
+  mat<T extends THREE.Material>(m: T): T;
+  tex(t: THREE.Texture): void;
+};
+
+type FacadeRef = { tex: THREE.Texture; style: FacadeStyle; base: string };
+
+const STORY = 3.2;
+
+function sharedLambert(kit: MeshKit, cache: Map<string, THREE.Material>, color: string, rough = 0.86) {
+  const key = `${color}|${rough}`;
+  const hit = cache.get(key);
+  if (hit) return hit;
+  const m = kit.mat(new THREE.MeshStandardMaterial({ color, roughness: rough, metalness: 0 }));
+  cache.set(key, m);
+  return m;
+}
+
+function addFlight(
+  kit: MeshKit,
+  iron: THREE.Material,
+  parent: THREE.Group,
+  side: number,
+  sx: number,
+  z0: number,
+  run: number,
+  rise: number,
+  y0: number,
+) {
+  const ang = Math.atan2(rise, run);
+  const len = Math.hypot(run, rise);
+  const stringer = new THREE.Mesh(kit.geo(new THREE.BoxGeometry(0.48, 0.07, len)), iron);
+  stringer.position.set(sx, y0 + rise / 2 + 0.08, z0 + run / 2);
+  stringer.rotation.x = -ang;
+  stringer.castShadow = true;
+  const railX = sx - side * 0.36;
+  const hand = new THREE.Mesh(kit.geo(new THREE.BoxGeometry(0.045, 0.045, len)), iron);
+  hand.position.set(railX, y0 + rise / 2 + 0.95, z0 + run / 2);
+  hand.rotation.x = -ang;
+  parent.add(stringer, hand);
+  for (let q = 0; q <= 4; q += 1) {
+    const t = q / 4;
+    const post = new THREE.Mesh(kit.geo(new THREE.BoxGeometry(0.04, 0.88, 0.04)), iron);
+    post.position.set(railX, y0 + rise * t + 0.48, z0 + run * t);
+    parent.add(post);
+  }
+}
+
+/** Plateau triplex: three brick storeys and the exterior staircase that names the type. */
+function buildTriplex(
+  kit: MeshKit,
+  cache: Map<string, THREE.Material>,
+  width: number,
+  depth: number,
+  side: number,
+  facade: FacadeRef,
+  shopTex: THREE.Texture,
+) {
+  const g = new THREE.Group();
+  const height = STORY * 3;
+  const wall = sharedLambert(kit, cache, facade.base, 0.92);
+  const body = new THREE.Mesh(kit.geo(new THREE.BoxGeometry(depth, height, width)), wall);
+  body.position.y = height / 2;
+  body.castShadow = true;
+  body.receiveShadow = true;
+  g.add(body);
+  const cornice = new THREE.Mesh(
+    kit.geo(new THREE.BoxGeometry(depth + 0.35, 0.28, width + 0.12)),
+    sharedLambert(kit, cache, "#e7dccb", 0.8),
+  );
+  cornice.position.y = height - 0.02;
+  cornice.castShadow = true;
+  g.add(cornice);
+  const parapet = new THREE.Mesh(
+    kit.geo(new THREE.BoxGeometry(depth + 0.08, 0.42, width - 0.15)),
+    sharedLambert(kit, cache, "#8b8378", 0.95),
+  );
+  parapet.position.y = height + 0.22;
+  g.add(parapet);
+
+  const tex = facade.tex.clone();
+  tex.needsUpdate = true;
+  kit.tex(tex);
+  tex.repeat.set(width / 6, 2);
+  const face = new THREE.Mesh(
+    kit.geo(new THREE.PlaneGeometry(width, STORY * 2)),
+    kit.mat(new THREE.MeshStandardMaterial({ map: tex, roughness: 0.78, metalness: 0 })),
+  );
+  const fx = -side * (depth / 2 + 0.02);
+  face.position.set(fx, STORY + STORY, 0);
+  face.rotation.y = side === 1 ? -Math.PI / 2 : Math.PI / 2;
+  face.receiveShadow = true;
+  g.add(face);
+
+  const shop = shopTex.clone();
+  shop.needsUpdate = true;
+  kit.tex(shop);
+  shop.repeat.set(width / 6, 1);
+  const shopMesh = new THREE.Mesh(
+    kit.geo(new THREE.PlaneGeometry(width, STORY)),
+    kit.mat(new THREE.MeshStandardMaterial({ map: shop, roughness: 0.7, metalness: 0 })),
+  );
+  shopMesh.position.set(fx - side * 0.004, STORY / 2, 0);
+  shopMesh.rotation.y = face.rotation.y;
+  shopMesh.receiveShadow = true;
+  g.add(shopMesh);
+
+  const iron = sharedLambert(kit, cache, "#262a2e", 0.45);
+  const doorMat = sharedLambert(kit, cache, "#1a1614", 0.7);
+  const run1 = Math.min(width * 0.46, 3.5);
+  const z1 = -Math.min(width * 0.22, 1.6);
+  const sx = fx - side * 0.5;
+  addFlight(kit, iron, g, side, sx, z1, run1, STORY, 0);
+  const landZ = z1 + run1 + 0.15;
+  const landing = new THREE.Mesh(kit.geo(new THREE.BoxGeometry(1.15, 0.08, 1.05)), iron);
+  landing.position.set(sx, STORY + 0.06, landZ);
+  landing.castShadow = true;
+  g.add(landing);
+  const door = new THREE.Mesh(kit.geo(new THREE.BoxGeometry(0.06, 1.2, 0.55)), doorMat);
+  door.position.set(fx - side * 0.01, STORY + 0.72, landZ);
+  g.add(door);
+  if (width >= 8.4) {
+    const run2 = Math.min(width * 0.32, 2.6, width / 2 - landZ - 0.5);
+    if (run2 > 1.15) {
+      addFlight(kit, iron, g, side, sx, landZ + 0.15, run2, STORY * 0.92, STORY);
+      const door2 = new THREE.Mesh(kit.geo(new THREE.BoxGeometry(0.06, 1.15, 0.5)), doorMat);
+      door2.position.set(fx - side * 0.01, STORY * 2 + 0.7, landZ + 0.15 + run2 * 0.6);
+      g.add(door2);
+    }
+  }
+  return g;
+}
+
+/** Downtown street wall: glass slab, darker podium, occasional mechanical crown. No stairs. */
+function buildTower(
+  kit: MeshKit,
+  cache: Map<string, THREE.Material>,
+  rng: Rng,
+  width: number,
+  depth: number,
+  side: number,
+  glass: THREE.Texture,
+) {
+  const g = new THREE.Group();
+  const floors = 6 + Math.floor(rng() * 4);
+  const floorH = 2.65;
+  const height = floors * floorH;
+  const tex = glass.clone();
+  tex.needsUpdate = true;
+  kit.tex(tex);
+  tex.repeat.set(Math.max(1, width / 8), floors);
+  const wall = kit.mat(
+    new THREE.MeshStandardMaterial({
+      map: tex,
+      roughness: 0.2,
+      metalness: 0.55,
+      envMapIntensity: 1.15,
+    }),
+  );
+  const body = new THREE.Mesh(kit.geo(new THREE.BoxGeometry(depth * 0.92, height, width)), wall);
+  body.position.y = height / 2 + 0.3;
+  body.castShadow = true;
+  body.receiveShadow = true;
+  g.add(body);
+  const podium = new THREE.Mesh(
+    kit.geo(new THREE.BoxGeometry(depth + 0.3, floorH, width + 0.16)),
+    sharedLambert(kit, cache, "#2a3036", 0.62),
+  );
+  podium.position.y = floorH / 2;
+  podium.castShadow = true;
+  g.add(podium);
+  const lobby = new THREE.Mesh(
+    kit.geo(new THREE.PlaneGeometry(width * 0.72, floorH * 0.62)),
+    kit.mat(
+      new THREE.MeshStandardMaterial({
+        color: "#b7d4e6",
+        roughness: 0.12,
+        metalness: 0.45,
+        emissive: "#163044",
+        emissiveIntensity: 0.18,
+      }),
+    ),
+  );
+  lobby.position.set(-side * (depth / 2 + 0.2), floorH * 0.48, 0);
+  lobby.rotation.y = side === 1 ? -Math.PI / 2 : Math.PI / 2;
+  g.add(lobby);
+  const lip = new THREE.Mesh(
+    kit.geo(new THREE.BoxGeometry(depth + 0.1, 0.35, width + 0.08)),
+    sharedLambert(kit, cache, "#d5dbe2", 0.4),
+  );
+  lip.position.y = height + 0.35;
+  g.add(lip);
+  if (rng() > 0.45) {
+    const crown = new THREE.Mesh(
+      kit.geo(new THREE.BoxGeometry(depth * 0.5, 2.4, width * 0.42)),
+      sharedLambert(kit, cache, "#8d949c", 0.55),
+    );
+    crown.position.y = height + 1.7;
+    crown.castShadow = true;
+    g.add(crown);
+    if (rng() > 0.5) {
+      const mast = new THREE.Mesh(
+        kit.geo(new THREE.BoxGeometry(0.12, 6, 0.12)),
+        sharedLambert(kit, cache, "#c8cdd2", 0.35),
+      );
+      mast.position.y = height + 5.2;
+      g.add(mast);
+    }
+  }
+  return g;
+}
+
+/**
+ * Both stages for one road chunk, on the same lots, so the engine can swap or mix them
+ * without rebuilding geometry. Subway chunks simply hide both groups.
+ */
+export function buildStreetLots(
+  kit: MeshKit,
+  rng: Rng,
+  len: number,
+  roadHalf: number,
+  facades: FacadeRef[],
+  shopTexs: THREE.Texture[],
+): StreetLot[] {
+  const cache = new Map<string, THREE.Material>();
+  const brick = facades.filter((f) => f.style === "brick");
+  const palette = brick.length ? brick : facades;
+  const glassTints = ["#7e8d9c", "#5d6e80", "#8aa0b3", "#667888"];
+  const glassTexs = glassTints.map((tint) => {
+    const tex = glassTexture(tint);
+    kit.tex(tex);
+    return tex;
+  });
+  const widths = [7.2, 8.6, 9.4, 11];
+  const lots: StreetLot[] = [];
+  for (const side of [-1, 1] as const) {
+    let z = -len / 2 + 1.1;
+    while (z < len / 2 - 4) {
+      const depth = 3.5 + rng() * 1.15;
+      const width = widths[Math.floor(rng() * widths.length)];
+      if (z + width > len / 2 - 0.35) break;
+      const facade = palette[Math.floor(rng() * palette.length)];
+      const shop = shopTexs[Math.floor(rng() * Math.max(1, shopTexs.length))] ?? facade.tex;
+      const triplex = buildTriplex(kit, cache, width, depth, side, facade, shop);
+      const downtown = buildTower(
+        kit,
+        cache,
+        rng,
+        width,
+        depth,
+        side,
+        glassTexs[Math.floor(rng() * glassTexs.length)],
+      );
+      const cz = z + width / 2;
+      const cx = side * (roadHalf + 1.7 + depth / 2);
+      triplex.position.set(cx, 0, cz);
+      downtown.position.set(cx, 0, cz);
+      downtown.visible = false;
+      lots.push({ triplex, downtown, z: cz, index: lots.length, n: 0 });
+      z += width + 0.4 + rng() * 0.55;
+    }
+  }
+  for (const lot of lots) lot.n = lots.length;
+  return lots;
 }

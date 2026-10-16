@@ -5,12 +5,16 @@ import {
   ChevronRight,
   ChevronUp,
   Coffee,
+  Footprints,
   HardHat,
+  Layers,
   Magnet,
   Pause,
   Play,
+  Rocket,
   Volume2,
   VolumeX,
+  Zap,
 } from "lucide-react";
 import { ConeGame, type Cause, type Hud, type Nudge } from "@/game/engine";
 
@@ -20,6 +24,8 @@ const CAUSE: Record<Cause, { title: string; line: string }> = {
   barrier: { title: "Barricade.", line: "Jersey barrier, one. You, zero." },
   scaffold: { title: "Échafaudage.", line: "That beam was not a suggestion." },
   truck: { title: "Truck.", line: "It was parked. You were not." },
+  pillar: { title: "Colonne.", line: "That one holds the tunnel up." },
+  sign: { title: "Enseigne.", line: "Slide. The métro does not duck." },
 };
 
 function fmt(n: number) {
@@ -179,7 +185,10 @@ function PlayingHud({
   return (
     <div className="absolute inset-x-0 top-0 z-10 flex items-start justify-between gap-3 p-4">
       <div>
-        <p className="font-display text-4xl leading-none text-fg">{fmt(hud?.score ?? 0)}</p>
+        <p className="flex items-baseline gap-2 font-display text-4xl leading-none text-fg">
+          {fmt(hud?.score ?? 0)}
+          {hud && hud.mult > 1 ? <span className="text-2xl text-orange">x{hud.mult}</span> : null}
+        </p>
         <p className="mt-1 flex items-center gap-3 text-sm text-muted">
           <span>{fmt(hud?.meters ?? 0)} m</span>
           <span className="inline-flex items-center gap-1 text-fg">
@@ -187,9 +196,24 @@ function PlayingHud({
             {fmt(hud?.coins ?? 0)}
           </span>
         </p>
+        {hud?.mission ? (
+          <p className="mt-1 text-xs text-muted">
+            {hud.mission.index}/{hud.mission.total} {hud.mission.label}{" "}
+            {fmt(hud.mission.progress)}/{fmt(hud.mission.goal)}
+          </p>
+        ) : null}
         <div className="mt-2 flex items-center gap-2">
           {hud?.hat ? <HardHat className="size-5 text-yellow" aria-label="Hard hat" /> : null}
           {hud && hud.magnet > 0 ? <Magnet className="size-5 text-orange" aria-label="Magnet" /> : null}
+          {hud && hud.boots > 0 ? <Footprints className="size-5 text-yellow" aria-label="Steel-toe boots" /> : null}
+          {hud && hud.jet > 0 ? <Rocket className="size-5 text-orange" aria-label="Propane jet" /> : null}
+          {hud && hud.board > 0 ? (
+            <span className="inline-flex items-center gap-0.5 text-yellow" aria-label="Plywood board">
+              <Layers className="size-5" />
+              <span className="text-xs">{hud.board}</span>
+            </span>
+          ) : null}
+          {hud && hud.boost > 0 ? <Zap className="size-5 text-yellow" aria-label="Double espresso" /> : null}
           <span className="flex gap-1" aria-hidden="true">
             {[-1, 0, 1].map((lane) => (
               <span
@@ -267,6 +291,10 @@ function Menu({
             <li className="flex items-center gap-3">
               <ChevronDown className="size-4 text-yellow" />
               Slide under scaffolds
+            </li>
+            <li className="flex items-center gap-3">
+              <Zap className="size-4 text-yellow" />
+              Bottes, planche, bonbonne, double espresso
             </li>
           </ul>
           <p className="mt-4 text-sm text-muted">

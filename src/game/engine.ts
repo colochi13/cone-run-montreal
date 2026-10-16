@@ -1,7 +1,27 @@
 import * as THREE from "three";
 import { Sfx } from "./audio";
-import { buildLandmarks, type Landmarks } from "./landmarks";
-import { asphaltTexture, cloudTexture, facadeTexture, shopTexture, sidewalkTexture, type FacadeStyle } from "./textures";
+import {
+  buildLandmarks,
+  buildStreetLots,
+  downtownAmount,
+  envAt,
+  SUBWAY_AT_M,
+  subwayAmount,
+  type Landmarks,
+  type StreetLot,
+} from "./landmarks";
+import {
+  asphaltTexture,
+  ballastTexture,
+  cloudTexture,
+  facadeTexture,
+  metroSignTexture,
+  potholeTexture,
+  shopTexture,
+  sidewalkTexture,
+  tunnelConcreteTexture,
+  type FacadeStyle,
+} from "./textures";
 
 const LANE = 1.8;
 const ROAD_HALF = 2.75;
@@ -9,7 +29,7 @@ const LEN = 30;
 const CHUNKS = 7;
 
 export type Phase = "attract" | "playing" | "paused" | "dead";
-export type Cause = "cone" | "pit" | "barrier" | "scaffold" | "truck";
+export type Cause = "cone" | "pit" | "barrier" | "scaffold" | "truck" | "pillar" | "sign";
 export type Nudge = "left" | "right" | "jump" | "slide";
 
 export type Hud = {
@@ -28,13 +48,50 @@ export type Hud = {
   heat: number;
   newBest: boolean;
   nears: number;
+  /** Seconds left on the steel-toe jump. */
+  boots: number;
+  /** Hits the plywood board can still soak. */
+  board: number;
+  /** Seconds left on the propane hover. */
+  jet: number;
+  /** Seconds left on the double-espresso multiplier. */
+  boost: number;
+  /** Combo × espresso. 1 means nothing special is stacking. */
+  mult: number;
+  mission: MissionHud | null;
 };
 
-type Kind = Cause | "coin" | "poutine" | "hat" | "magnet";
+export type MissionHud = {
+  label: string;
+  progress: number;
+  goal: number;
+  index: number;
+  total: number;
+};
+
+type Kind = Cause | "coin" | "poutine" | "hat" | "magnet" | "boots" | "board" | "jet" | "boost";
 
 type Spawn = { z: number; lane: -1 | 0 | 1; kind: Kind; hint?: string };
 
-type Pattern = { len: number; min: number; spawns: Spawn[] };
+/** spice 0 stays common. Higher spice is picked more often as the run gets long. */
+type Pattern = { len: number; min: number; spawns: Spawn[]; spice?: number };
+
+type MissionId = "meters" | "coins" | "nears" | "power" | "combo";
+
+type MissionDef = { id: MissionId; goal: number; label: string };
+
+function isPickup(kind: Kind) {
+  return (
+    kind === "coin" ||
+    kind === "poutine" ||
+    kind === "hat" ||
+    kind === "magnet" ||
+    kind === "boots" ||
+    kind === "board" ||
+    kind === "jet" ||
+    kind === "boost"
+  );
+}
 
 type Ent = {
   kind: Kind;
@@ -63,6 +120,74 @@ type Save = { v: 1; best: number; muted: boolean };
 
 const HAZE = "#cfdce6";
 const SAVE_KEY = "cone-run-v1";
+
+/** Irregular dish: raised broken rim, shallow dark centre. Normals point up. */
+function potholeGeometry() {
+  const A = 34;
+  const rings = [
+    { r: 0.1, y: 0.04 },
+    { r: 0.26, y: 0.046 },
+    { r: 0.42, y: 0.058 },
+    { r: 0.58, y: 0.074 },
+    { r: 0.72, y: 0.118 },
+    { r: 0.92, y: 0.046 },
+  ];
+  const jag = new Float32Array(A);
+  for (let i = 0; i < A; i += 1) {
+    const a = (i / A) * Math.PI * 2;
+    let j = 1 + 0.15 * Math.sin(a * 3 + 0.6) + 0.09 * Math.sin(a * 7 - 0.4) + 0.04 * Math.sin(a * 13 + 1.4);
+    if (Math.sin(a * 5 + 0.8) > 0.7) j *= 0.8;
+    jag[i] = j;
+  }
+  const positions: number[] = [];
+  const uvs: number[] = [];
+  positions.push(0, 0.036, 0);
+  uvs.push(0.5, 0.5);
+  for (let r = 0; r < rings.length; r += 1) {
+    for (let i = 0; i < A; i += 1) {
+      const a = (i / A) * Math.PI * 2;
+      const influence = Math.min(1, rings[r].r / 0.42);
+      const radius = rings[r].r * (1 + (jag[i] - 1) * influence);
+      let y = rings[r].y;
+      if (r >= 4 && Math.sin(a * 5 + 0.8) > 0.7) y -= 0.045;
+      positions.push(Math.cos(a) * radius, y, Math.sin(a) * radius);
+      uvs.push(0.5 + Math.cos(a) * (radius / 2.05), 0.5 + Math.sin(a) * (radius / 2.05));
+    }
+  }
+  const indices: number[] = [];
+  for (let i = 0; i < A; i += 1) {
+    indices.push(0, 1 + ((i + 1) % A), 1 + i);
+  }
+  for (let r = 0; r < rings.length - 1; r += 1) {
+    for (let i = 0; i < A; i += 1) {
+      const nxt = (i + 1) % A;
+      const a = 1 + r * A + i;
+      const b = 1 + r * A + nxt;
+      const c = 1 + (r + 1) * A + i;
+      const d = 1 + (r + 1) * A + nxt;
+      indices.push(a, c, b);
+      indices.push(b, c, d);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+function smoothstep(x: number, edge0: number, edge1: number) {
+  const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+}
+
+/** Mostly steady fluorescents, with a hard dip every so often. */
+function fluorFlicker(time: number) {
+  const wobble = 0.84 + Math.sin(time * 19) * 0.08 + Math.sin(time * 47) * 0.05;
+  const drop = Math.sin(time * 13.7) > 0.93 ? 0.22 : 1;
+  return wobble * drop;
+}
 
 function mulberry32(seed: number) {
   let a = seed >>> 0;
@@ -129,6 +254,7 @@ const PATTERNS: Pattern[] = [
   {
     len: 28,
     min: 40,
+    spice: 2,
     spawns: [
       { z: 0, lane: -1, kind: "pit" },
       { z: 0, lane: 0, kind: "pit" },
@@ -138,6 +264,7 @@ const PATTERNS: Pattern[] = [
   {
     len: 28,
     min: 50,
+    spice: 2,
     spawns: [
       { z: 0, lane: -1, kind: "scaffold" },
       { z: 0, lane: 0, kind: "scaffold" },
@@ -201,6 +328,175 @@ const PATTERNS: Pattern[] = [
       { z: 10, lane: -1, kind: "poutine" },
     ],
   },
+  {
+    len: 24,
+    min: 70,
+    spice: 1,
+    spawns: [
+      { z: 0, lane: 1, kind: "cone" },
+      { z: 0, lane: -1, kind: "boots" },
+    ],
+  },
+  {
+    len: 26,
+    min: 110,
+    spice: 1,
+    spawns: [
+      { z: 0, lane: 0, kind: "board" },
+      { z: 6, lane: 1, kind: "coin" },
+      { z: 9, lane: 1, kind: "coin" },
+    ],
+  },
+  {
+    len: 28,
+    min: 180,
+    spice: 1,
+    spawns: [
+      { z: 0, lane: -1, kind: "barrier" },
+      { z: 0, lane: 1, kind: "jet" },
+    ],
+  },
+  {
+    len: 24,
+    min: 90,
+    spice: 1,
+    spawns: [
+      { z: 0, lane: 0, kind: "boost" },
+      { z: 5, lane: 0, kind: "coin" },
+      { z: 8, lane: 0, kind: "coin" },
+    ],
+  },
+];
+
+/** Obstacles that belong underground. Same lanes and the same dodge / jump / slide verbs. */
+const SUBWAY_PATTERNS: Pattern[] = [
+  { len: 24, min: 0, spawns: [{ z: 0, lane: 0, kind: "pillar", hint: "SWIPE — column fills the lane" }] },
+  { len: 24, min: 0, spawns: [{ z: 0, lane: -1, kind: "pillar" }] },
+  { len: 24, min: 0, spawns: [{ z: 0, lane: 1, kind: "pillar" }] },
+  {
+    len: 24,
+    min: 0,
+    spice: 2,
+    spawns: [
+      { z: 0, lane: -1, kind: "pillar" },
+      { z: 0, lane: 1, kind: "pillar" },
+    ],
+  },
+  { len: 24, min: 0, spawns: [{ z: 0, lane: 0, kind: "sign", hint: "SLIDE — under the sign" }] },
+  {
+    len: 26,
+    min: 0,
+    spice: 2,
+    spawns: [
+      { z: 0, lane: -1, kind: "sign" },
+      { z: 0, lane: 0, kind: "sign" },
+      { z: 0, lane: 1, kind: "sign" },
+    ],
+  },
+  {
+    len: 28,
+    min: 0,
+    spice: 2,
+    spawns: [
+      { z: 0, lane: 0, kind: "pillar" },
+      { z: 12, lane: -1, kind: "sign" },
+      { z: 12, lane: 1, kind: "sign" },
+    ],
+  },
+  { len: 24, min: 0, spawns: [{ z: 0, lane: 0, kind: "pit" }] },
+  {
+    len: 28,
+    min: 0,
+    spice: 2,
+    spawns: [
+      { z: 0, lane: -1, kind: "pit" },
+      { z: 0, lane: 0, kind: "pit" },
+      { z: 0, lane: 1, kind: "pit" },
+    ],
+  },
+  {
+    len: 26,
+    min: 0,
+    spawns: [
+      { z: 0, lane: 1, kind: "cone" },
+      { z: 11, lane: -1, kind: "pillar" },
+    ],
+  },
+  {
+    len: 26,
+    min: 0,
+    spawns: [
+      { z: 0, lane: 0, kind: "cone" },
+      { z: 3, lane: -1, kind: "coin" },
+      { z: 6, lane: -1, kind: "coin" },
+      { z: 9, lane: 1, kind: "coin" },
+    ],
+  },
+  {
+    len: 24,
+    min: 0,
+    spawns: [
+      { z: 0, lane: -1, kind: "sign" },
+      { z: 0, lane: 1, kind: "hat" },
+    ],
+  },
+  {
+    len: 26,
+    min: 0,
+    spawns: [
+      { z: 0, lane: 0, kind: "pillar" },
+      { z: 0, lane: 1, kind: "magnet" },
+      { z: 4, lane: -1, kind: "coin" },
+      { z: 8, lane: -1, kind: "poutine" },
+    ],
+  },
+  {
+    len: 24,
+    min: 0,
+    spice: 1,
+    spawns: [
+      { z: 0, lane: 1, kind: "pillar" },
+      { z: 0, lane: -1, kind: "boots" },
+    ],
+  },
+  {
+    len: 26,
+    min: 0,
+    spice: 1,
+    spawns: [
+      { z: 0, lane: 0, kind: "jet" },
+      { z: 8, lane: 1, kind: "sign" },
+    ],
+  },
+  {
+    len: 24,
+    min: 0,
+    spice: 1,
+    spawns: [
+      { z: 0, lane: -1, kind: "board" },
+      { z: 5, lane: 1, kind: "coin" },
+    ],
+  },
+  {
+    len: 24,
+    min: 0,
+    spice: 1,
+    spawns: [{ z: 0, lane: 0, kind: "boost" }],
+  },
+];
+
+const STATION_NAMES = ["SHERBROOKE", "MONT-ROYAL", "LAURIER", "BEAUBIEN", "JEAN-TALON"];
+
+/** Three of these are dealt at the start of a run. Progress is counted from the moment each one starts. */
+const MISSION_DEFS: MissionDef[] = [
+  { id: "meters", goal: 200, label: "Cours 200 m" },
+  { id: "meters", goal: 450, label: "Cours 450 m" },
+  { id: "coins", goal: 12, label: "12 cafés" },
+  { id: "coins", goal: 25, label: "25 cafés" },
+  { id: "nears", goal: 3, label: "3 proches" },
+  { id: "nears", goal: 6, label: "6 proches" },
+  { id: "power", goal: 1, label: "Un power-up" },
+  { id: "combo", goal: 4, label: "Combo x4" },
 ];
 
 function introScript(): Pattern[] {
@@ -256,6 +552,8 @@ export class ConeGame {
   private host: HTMLElement;
   private time = 0;
   private meters = 0;
+  /** Distance the scenery has actually scrolled. Stays glued to the chunks during a wipeout. */
+  private scenic = 0;
   private coins = 0;
   private nears = 0;
   private best: number;
@@ -273,6 +571,27 @@ export class ConeGame {
   private invuln = 0;
   private hat = false;
   private magnetT = 0;
+  private bootsT = 0;
+  private boardT = 0;
+  private boardHits = 0;
+  private jetT = 0;
+  private boostT = 0;
+  private combo = 0;
+  private comboT = 0;
+  private powersUsed = 0;
+  private scoreAcc = 0;
+  private missions: MissionDef[] = [];
+  private missionI = 0;
+  private missionBaseMeters = 0;
+  private missionBaseCoins = 0;
+  private missionBaseNears = 0;
+  private missionBasePowers = 0;
+  private boardMesh!: THREE.Group;
+  private jetMesh!: THREE.Group;
+  private flameL!: THREE.Mesh;
+  private flameR!: THREE.Mesh;
+  private bootGlow!: THREE.Mesh;
+  private boostMat: THREE.MeshStandardMaterial | null = null;
   private hitstop = 0;
   private shake = 0;
   private deathT = 0;
@@ -324,7 +643,13 @@ export class ConeGame {
   private shadow: THREE.Mesh;
   private bubble: THREE.Mesh;
   private chunks: THREE.Group[] = [];
-  private bldgs: { g: THREE.Group; chunk: THREE.Group; z: number; h: number }[] = [];
+  private chunkRecs: {
+    group: THREE.Group;
+    street: THREE.Group;
+    tunnel: THREE.Group;
+    road: THREE.Object3D;
+    lots: StreetLot[];
+  }[] = [];
   private facades: { tex: THREE.Texture; style: FacadeStyle; base: string }[] = [];
   private shopTexs: THREE.Texture[] = [];
   private asphaltTex!: THREE.Texture;
@@ -334,6 +659,31 @@ export class ConeGame {
   private drumBlack: THREE.Material | null = null;
   private landmarks!: Landmarks;
   private clouds: THREE.Sprite[] = [];
+  private hemi!: THREE.HemisphereLight;
+  private sun!: THREE.DirectionalLight;
+  private rim!: THREE.DirectionalLight;
+  private lamp!: THREE.PointLight;
+  private fog!: THREE.Fog;
+  private bg!: THREE.Color;
+  private fluor!: THREE.MeshStandardMaterial;
+  private portal!: THREE.Group;
+  private train!: THREE.Group;
+  private trainZ = 30;
+  private trainOn = false;
+  private trainSide: -1 | 1 = -1;
+  private nextTrainM = SUBWAY_AT_M + 180;
+  private metroCalled = false;
+  private pitProto: THREE.Group | null = null;
+  private signMats: THREE.Material[] = [];
+  private tunnelBuilt = false;
+  private tmpFog = new THREE.Color();
+  private streetHemi = new THREE.Color(0xeaf1f8);
+  private tunnelHemi = new THREE.Color(0x9aafc4);
+  private streetGround = new THREE.Color(0x8a7a66);
+  private tunnelGround = new THREE.Color(0x3a424c);
+  private hazeColor = new THREE.Color(HAZE);
+  private tunnelFog = new THREE.Color("#314054");
+  private darkColor = new THREE.Color("#05060a");
   private pmrem: THREE.PMREMGenerator | null = null;
   private envRT: THREE.WebGLRenderTarget | null = null;
   private steam: { mesh: THREE.Mesh; t: number }[] = [];
@@ -364,11 +714,15 @@ export class ConeGame {
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.setClearColor(HAZE);
     this.camera = new THREE.PerspectiveCamera(60, 1, 0.1, 1400);
-    this.scene.fog = new THREE.Fog(HAZE, 55, 760);
-    this.scene.background = new THREE.Color(HAZE);
+    this.fog = new THREE.Fog(HAZE, 55, 760);
+    this.scene.fog = this.fog;
+    this.bg = new THREE.Color(HAZE);
+    this.scene.background = this.bg;
 
-    const hemi = new THREE.HemisphereLight(0xeaf1f8, 0x8a7a66, 0.5);
-    const sun = new THREE.DirectionalLight(0xffe9c8, 3.3);
+    this.hemi = new THREE.HemisphereLight(0xeaf1f8, 0x8a7a66, 0.5);
+    const hemi = this.hemi;
+    this.sun = new THREE.DirectionalLight(0xffe9c8, 3.3);
+    const sun = this.sun;
     sun.position.set(-14, 24, -2);
     sun.target.position.set(0, 0, -16);
     sun.castShadow = true;
@@ -382,9 +736,13 @@ export class ConeGame {
     sun.shadow.camera.far = 90;
     sun.shadow.bias = -0.0004;
     sun.shadow.normalBias = 0.03;
-    const rim = new THREE.DirectionalLight(0xffa86a, 0.5);
+    this.rim = new THREE.DirectionalLight(0xffa86a, 0.5);
+    const rim = this.rim;
     rim.position.set(10, 8, -30);
-    this.scene.add(hemi, sun, sun.target, rim);
+    this.lamp = new THREE.PointLight(0xd5e6ff, 0, 18, 2);
+    this.lamp.position.set(0, 3.05, -4.5);
+    this.lamp.visible = false;
+    this.scene.add(hemi, sun, sun.target, rim, this.lamp);
     this.scene.environmentIntensity = 0.32;
 
     this.asphaltTex = asphaltTexture(mulberry32(7));
@@ -401,7 +759,10 @@ export class ConeGame {
     this.buildSky();
     this.buildVista();
     for (let i = 0; i < CHUNKS; i += 1) this.chunks.push(this.buildChunk(i));
+    this.buildPortal();
+    this.buildTrain();
     this.buildPlayer();
+    this.buildGear();
     this.shadow = this.makeShadow();
     this.bubble = this.makeBubble();
     this.player.add(this.bubble);
@@ -557,7 +918,7 @@ export class ConeGame {
       phase: this.phase,
       meters,
       coins: this.coins,
-      score: meters + this.coins * 10 + this.nears * 25,
+      score: Math.floor(this.scoreAcc),
       best: this.best,
       lane: this.laneTarget,
       hat: this.hat,
@@ -569,6 +930,12 @@ export class ConeGame {
       heat: Math.min(1, Math.max(0, (this.speed - 16) / 14)),
       newBest: this.newBest,
       nears: this.nears,
+      boots: this.bootsT,
+      board: this.boardHits,
+      jet: this.jetT,
+      boost: this.boostT,
+      mult: this.scoreMult(),
+      mission: this.missionHud(),
     };
   }
 
@@ -606,6 +973,18 @@ export class ConeGame {
     this.invuln = 0;
     this.hat = false;
     this.magnetT = 0;
+    this.bootsT = 0;
+    this.boardT = 0;
+    this.boardHits = 0;
+    this.jetT = 0;
+    this.boostT = 0;
+    this.combo = 0;
+    this.comboT = 0;
+    this.powersUsed = 0;
+    this.scoreAcc = 0;
+    this.missions = phase === "playing" ? this.rollMissions() : [];
+    this.missionI = 0;
+    this.snapMissionBase();
     this.hitstop = 0;
     this.shake = 0;
     this.deathT = 0;
@@ -618,9 +997,17 @@ export class ConeGame {
     this.player.position.set(0, 0, 0);
     this.visual.rotation.set(0, 0, 0);
     this.horizon = -6;
+    this.scenic = 0;
+    this.metroCalled = false;
+    this.trainOn = false;
+    this.trainZ = 30;
+    this.nextTrainM = SUBWAY_AT_M + 180;
+    if (this.train) this.train.visible = false;
     this.script = phase === "playing" ? introScript() : [];
     for (const e of this.ents) this.release(e);
     this.fillRoad();
+    if (this.chunkRecs.length) this.updateScenery();
+    if (this.fog) this.updateAtmosphere();
   }
 
   private sim(dt: number) {
@@ -643,8 +1030,11 @@ export class ConeGame {
     if (this.phase === "playing") {
       const target = Math.min(30, 15 + this.meters * 0.012);
       this.speed += (target - this.speed) * Math.min(1, sdt * 0.7);
-      this.meters += this.speed * sdt;
+      const dm = this.speed * sdt;
+      this.meters += dm;
+      this.scoreAcc += dm * (this.boostT > 0 ? 2 : 1);
       this.sfx.updatePitchBySpeed(this.speed, 30, sdt);
+      this.tickPowers(dt);
     } else if (this.phase === "attract") {
       this.speed = 10;
     } else {
@@ -655,6 +1045,7 @@ export class ConeGame {
     }
 
     const shift = this.speed * sdt;
+    if (this.phase === "playing" || this.phase === "dead") this.scenic += shift;
     for (const chunk of this.chunks) {
       chunk.position.z += shift;
       if (chunk.position.z > LEN) chunk.position.z -= CHUNKS * LEN;
@@ -670,7 +1061,14 @@ export class ConeGame {
       else this.noteCross(e, prev);
     }
     this.fillRoad();
-    this.updateBuildings();
+    this.updateScenery();
+    this.updateTrain(shift);
+    if (this.phase === "playing" && !this.metroCalled && this.scenic >= SUBWAY_AT_M - 28) {
+      this.metroCalled = true;
+      this.callout = "MÉTRO";
+      this.calloutT = 1.6;
+      this.emit(true);
+    }
 
     if (this.phase === "attract") this.autopilot();
     if (this.phase === "playing" || this.phase === "attract") this.updatePlayer(dt, sdt);
@@ -679,8 +1077,143 @@ export class ConeGame {
     this.updateFloaters();
     this.updateSteam(dt);
     this.updateParticles(dt);
-    if (this.phase === "playing") this.collide();
+    if (this.phase === "playing") {
+      this.collide();
+      this.tickMissions();
+    }
+    this.updateGear();
     this.shake *= Math.exp(-dt * 5);
+  }
+
+  /** Power-up clocks freeze while the run is paused. The combo drops if nothing feeds it. */
+  private tickPowers(dt: number) {
+    if (this.bootsT > 0) this.bootsT -= dt;
+    if (this.jetT > 0) this.jetT -= dt;
+    if (this.boostT > 0) this.boostT -= dt;
+    if (this.boardT > 0) {
+      this.boardT -= dt;
+      if (this.boardT <= 0) this.boardHits = 0;
+    }
+    if (this.comboT > 0) {
+      this.comboT -= dt;
+      if (this.comboT <= 0) this.combo = 0;
+    }
+  }
+
+  /** Distance is doubled by the espresso. Coins, poutine and proches also take the combo. */
+  private gain(base: number) {
+    this.scoreAcc += base * this.scoreMult();
+  }
+
+  private comboMult() {
+    if (this.combo >= 12) return 5;
+    if (this.combo >= 8) return 4;
+    if (this.combo >= 5) return 3;
+    if (this.combo >= 3) return 2;
+    return 1;
+  }
+
+  private scoreMult() {
+    return this.comboMult() * (this.boostT > 0 ? 2 : 1);
+  }
+
+  private chain() {
+    if (this.phase !== "playing") return;
+    const prev = this.comboMult();
+    this.combo += 1;
+    this.comboT = 2.6;
+    const next = this.comboMult();
+    if (next > prev) {
+      this.callout = `x${next}`;
+      this.calloutT = 0.65;
+    }
+  }
+
+  private rollMissions() {
+    const bag = MISSION_DEFS.slice();
+    const picked: MissionDef[] = [];
+    const used = new Set<MissionId>();
+    let guard = 0;
+    while (picked.length < 3 && bag.length && guard < 24) {
+      guard += 1;
+      const j = Math.floor(this.rng() * bag.length);
+      const mission = bag.splice(j, 1)[0];
+      if (used.has(mission.id)) continue;
+      used.add(mission.id);
+      picked.push(mission);
+    }
+    const ease = (mission: MissionDef) => {
+      if (mission.id === "power") return 0;
+      if (mission.id === "nears") return mission.goal;
+      if (mission.id === "coins") return mission.goal / 4;
+      if (mission.id === "meters") return mission.goal / 80;
+      return 5;
+    };
+    picked.sort((a, b) => ease(a) - ease(b));
+    return picked;
+  }
+
+  private snapMissionBase() {
+    this.missionBaseMeters = this.meters;
+    this.missionBaseCoins = this.coins;
+    this.missionBaseNears = this.nears;
+    this.missionBasePowers = this.powersUsed;
+  }
+
+  private missionNow(mission: MissionDef) {
+    if (mission.id === "meters") return Math.floor(this.meters - this.missionBaseMeters);
+    if (mission.id === "coins") return this.coins - this.missionBaseCoins;
+    if (mission.id === "nears") return this.nears - this.missionBaseNears;
+    if (mission.id === "power") return this.powersUsed - this.missionBasePowers;
+    return this.combo < 3 ? 0 : this.comboMult();
+  }
+
+  private missionHud(): MissionHud | null {
+    const mission = this.missions[this.missionI];
+    if (!mission || this.phase === "attract") return null;
+    const progress = Math.max(0, this.missionNow(mission));
+    return {
+      label: mission.label,
+      progress: Math.min(mission.goal, progress),
+      goal: mission.goal,
+      index: this.missionI + 1,
+      total: this.missions.length,
+    };
+  }
+
+  private tickMissions() {
+    const mission = this.missions[this.missionI];
+    if (!mission) return;
+    if (this.missionNow(mission) < mission.goal) return;
+    const bonus = 120 * (this.missionI + 1);
+    this.scoreAcc += bonus;
+    this.missionI += 1;
+    this.snapMissionBase();
+    this.callout = `MISSION +${bonus}`;
+    this.calloutT = 1.15;
+    this.sfx.rich();
+  }
+
+  private patternWeight(pattern: Pattern) {
+    const spice = pattern.spice ?? (pattern.min >= 240 ? 2 : pattern.min >= 80 ? 1 : 0);
+    const depth = this.phase === "playing" ? Math.min(1, this.meters / 800) : 0;
+    return 1 + spice * depth * 1.25;
+  }
+
+  private pickWeighted(list: Pattern[]) {
+    if (!list.length) return PATTERNS[0];
+    let total = 0;
+    const weights = list.map((pattern) => {
+      const weight = this.patternWeight(pattern);
+      total += weight;
+      return weight;
+    });
+    let roll = this.rng() * total;
+    for (let i = 0; i < list.length; i += 1) {
+      roll -= weights[i];
+      if (roll <= 0) return list[i];
+    }
+    return list[list.length - 1];
   }
 
   private updatePlayer(dt: number, sdt: number) {
@@ -699,8 +1232,8 @@ export class ConeGame {
 
     if (this.jumpBuffer > 0) {
       this.jumpBuffer -= dt;
-      if (this.grounded) {
-        this.vy = 8.3;
+      if (this.grounded && this.jetT <= 0) {
+        this.vy = this.bootsT > 0 ? 11.6 : 8.3;
         this.grounded = false;
         this.sliding = 0;
         this.slideBuffer = 0;
@@ -727,6 +1260,12 @@ export class ConeGame {
       this.y = 0;
       this.vy = 0;
       this.grounded = true;
+    }
+    if (this.jetT > 0) {
+      this.y += (1.18 - this.y) * Math.min(1, sdt * 8);
+      this.vy = 0;
+      this.grounded = false;
+      this.sliding = 0;
     }
     this.player.position.y = this.y;
     const goal = this.laneTarget * LANE;
@@ -840,7 +1379,7 @@ export class ConeGame {
   private updateFloaters() {
     for (const e of this.ents) {
       if (!e.alive) continue;
-      if (e.kind === "coin" || e.kind === "poutine" || e.kind === "hat" || e.kind === "magnet") {
+      if (isPickup(e.kind)) {
         e.mesh.rotation.y = this.time * 1.8 + e.z;
         e.mesh.position.y = 0.08 + Math.sin(this.time * 3.4 + e.x * 2) * 0.08;
       }
@@ -848,7 +1387,7 @@ export class ConeGame {
         e.x += (this.player.position.x - e.x) * 0.18;
         e.z += Math.min(0.35, Math.max(0, -e.z) * 0.08);
       }
-      if (e.kind === "coin" || e.kind === "poutine" || e.kind === "hat" || e.kind === "magnet") {
+      if (isPickup(e.kind)) {
         e.mesh.position.x = e.x;
         e.mesh.position.z = e.z;
       }
@@ -869,12 +1408,15 @@ export class ConeGame {
   private noteCross(e: Ent, prev: number) {
     if (this.phase !== "playing" || e.scored) return;
     if (!(prev < 0 && e.z >= 0)) return;
-    if (e.kind === "coin" || e.kind === "poutine" || e.kind === "hat" || e.kind === "magnet") return;
+    if (isPickup(e.kind)) return;
     const dx = Math.abs(e.x - this.player.position.x);
     if (dx > 0.82 && dx < 1.2) {
       e.scored = true;
       this.nears += 1;
-      this.callout = "PROCHE";
+      this.chain();
+      this.gain(25);
+      const mult = this.comboMult();
+      this.callout = mult > 1 ? `PROCHE x${mult}` : "PROCHE";
       this.calloutT = 0.7;
       this.sfx.near();
       if (!this.reduceMotion) this.shake = Math.max(this.shake, 0.08);
@@ -888,19 +1430,34 @@ export class ConeGame {
       if (!e.alive) continue;
       const dx = Math.abs(e.x - px);
       const reach =
-        e.kind === "truck" ? 1.65 : e.kind === "pit" ? 0.95 : e.kind === "barrier" ? 0.7 : 0.62;
+        e.kind === "truck" ? 1.65 : e.kind === "pit" ? 0.95 : e.kind === "barrier" ? 0.7 : e.kind === "pillar" ? 0.55 : 0.62;
       if (Math.abs(e.z) > reach) continue;
-      const pickup = e.kind === "coin" || e.kind === "poutine" || e.kind === "hat" || e.kind === "magnet";
-      if (pickup) {
+      if (isPickup(e.kind)) {
         if (dx > 0.85) continue;
         this.collect(e);
         continue;
       }
       if (dx > 0.78) continue;
+      if (this.jetT > 0 && e.kind !== "pillar") continue;
       if (e.kind === "pit" && this.y > 0.5) continue;
       if (e.kind === "barrier" && this.y > 0.55) continue;
-      if (e.kind === "scaffold" && this.sliding > 0.02) continue;
+      if ((e.kind === "scaffold" || e.kind === "sign") && this.sliding > 0.02) continue;
       if (e.kind === "cone" && this.y > 1.25) continue;
+      if (e.kind === "truck" && this.bootsT > 0 && this.y > 1.45) continue;
+      if (this.boardHits > 0) {
+        this.boardHits -= 1;
+        if (this.boardHits <= 0) this.boardT = 0;
+        this.invuln = 0.45;
+        this.hitstop = 0.06;
+        this.shake = Math.max(this.shake, 0.28);
+        this.callout = this.boardHits > 0 ? "PLANCHE" : "PLANCHE CASSÉE";
+        this.calloutT = 0.8;
+        this.sfx.smack();
+        this.burst(e.x, 0.8, e.z, 0xc4a574, 10, 3);
+        this.release(e);
+        if (navigator.vibrate) navigator.vibrate(16);
+        return;
+      }
       if (this.hat) {
         this.hat = false;
         this.invuln = 1.2;
@@ -920,26 +1477,60 @@ export class ConeGame {
   }
 
   private collect(e: Ent) {
+    this.chain();
     if (e.kind === "coin") {
       this.coins += 1;
+      this.gain(10);
       this.sfx.coin();
       this.burst(e.x, 0.8, e.z, 0xfff6ea, 4, 1.4);
     } else if (e.kind === "poutine") {
       this.coins += 5;
+      this.gain(50);
       this.sfx.rich();
       this.callout = "POUTINE +5";
       this.calloutT = 0.8;
       this.burst(e.x, 0.8, e.z, 0xf2d15a, 8, 2);
     } else if (e.kind === "hat") {
       this.hat = true;
+      this.powersUsed += 1;
       this.sfx.power();
       this.callout = "CASQUE";
       this.calloutT = 0.9;
     } else if (e.kind === "magnet") {
       this.magnetT = 8;
+      this.powersUsed += 1;
       this.sfx.power();
       this.callout = "AIMANT";
       this.calloutT = 0.9;
+    } else if (e.kind === "boots") {
+      this.bootsT = 8;
+      this.powersUsed += 1;
+      this.sfx.power();
+      this.callout = "BOTTES";
+      this.calloutT = 0.9;
+      this.burst(e.x, 0.4, e.z, 0xffe14a, 6, 2);
+    } else if (e.kind === "board") {
+      this.boardT = 8;
+      this.boardHits = 3;
+      this.powersUsed += 1;
+      this.sfx.power();
+      this.callout = "PLANCHE";
+      this.calloutT = 0.9;
+    } else if (e.kind === "jet") {
+      this.jetT = 5;
+      this.powersUsed += 1;
+      this.sliding = 0;
+      this.sfx.power();
+      this.callout = "BONBONNE";
+      this.calloutT = 0.9;
+      this.burst(e.x, 0.9, e.z, 0xff8a1f, 8, 2.4);
+    } else if (e.kind === "boost") {
+      this.boostT = 8;
+      this.powersUsed += 1;
+      this.sfx.power();
+      this.callout = "DOUBLE x2";
+      this.calloutT = 0.9;
+      this.burst(e.x, 0.9, e.z, 0xf2d15a, 8, 2);
     }
     if (navigator.vibrate && (e.kind === "coin" || e.kind === "poutine")) navigator.vibrate(8);
     this.release(e);
@@ -956,7 +1547,7 @@ export class ConeGame {
     this.sfx.fadeOut(0.35);
     this.sfx.fail();
     this.burst(e.x, 0.9, 0, 0xff5a1f, 18, 4.2);
-    const score = Math.floor(this.meters) + this.coins * 10 + this.nears * 25;
+    const score = Math.floor(this.scoreAcc);
     if (score > this.best) {
       this.best = score;
       this.newBest = true;
@@ -972,7 +1563,7 @@ export class ConeGame {
     let bestD = 1e9;
     for (const e of this.ents) {
       if (!e.alive) continue;
-      if (e.kind === "coin" || e.kind === "poutine" || e.kind === "hat" || e.kind === "magnet") continue;
+      if (isPickup(e.kind)) continue;
       if (e.z > -0.4 || e.z < -this.speed * 1.35) continue;
       if (Math.abs(e.x - this.player.position.x) > 0.9) continue;
       const d = -e.z;
@@ -986,7 +1577,7 @@ export class ConeGame {
       this.jumpBuffer = 0.14;
       return;
     }
-    if (nearest.kind === "scaffold") {
+    if (nearest.kind === "scaffold" || nearest.kind === "sign") {
       this.slideBuffer = 0.14;
       return;
     }
@@ -1000,7 +1591,7 @@ export class ConeGame {
     const x = lane * LANE;
     for (const e of this.ents) {
       if (!e.alive) continue;
-      if (e.kind === "coin" || e.kind === "poutine" || e.kind === "hat" || e.kind === "magnet") continue;
+      if (isPickup(e.kind)) continue;
       if (Math.abs(e.z - zRef) > 2.4) continue;
       if (Math.abs(e.x - x) < 0.8) return true;
     }
@@ -1023,10 +1614,14 @@ export class ConeGame {
 
   private nextPattern(): Pattern {
     if (this.script.length) return this.script.shift()!;
+    // Spawn a little before the mouth so the first columns are waiting inside it, not on the street.
+    if (this.phase === "playing" && this.scenic >= SUBWAY_AT_M - 70) {
+      return this.pickWeighted(SUBWAY_PATTERNS);
+    }
     const pool = PATTERNS.filter((p) => this.meters >= p.min || this.phase === "attract");
     const usable = (this.phase === "attract" ? PATTERNS.filter((p) => p.min === 0) : pool);
     const pickFrom = usable.length ? usable : PATTERNS;
-    return pickFrom[Math.floor(this.rng() * pickFrom.length)];
+    return this.pickWeighted(pickFrom);
   }
 
   private spawn(kind: Kind, lane: number, z: number, hint?: string) {
@@ -1053,6 +1648,17 @@ export class ConeGame {
       });
     };
     show(ent.kind);
+    if (ent.kind === "pit") {
+      const pit = ent.mesh.getObjectByName("pit");
+      if (pit) pit.rotation.y = Math.abs(Math.sin(ent.z * 12.989)) * Math.PI * 2;
+    }
+    if (ent.kind === "sign" && this.signMats.length) {
+      const board = ent.mesh.getObjectByName("board");
+      if (board instanceof THREE.Mesh) {
+        const i = Math.abs(Math.floor(ent.z * 1.7)) % this.signMats.length;
+        board.material = this.signMats[i];
+      }
+    }
   }
 
   private release(ent: Ent) {
@@ -1062,7 +1668,23 @@ export class ConeGame {
   }
 
   private poolEntities() {
-    const blueprints: Kind[] = ["cone", "pit", "barrier", "scaffold", "truck", "coin", "poutine", "hat", "magnet"];
+    const blueprints: Kind[] = [
+      "cone",
+      "pit",
+      "barrier",
+      "scaffold",
+      "truck",
+      "pillar",
+      "sign",
+      "coin",
+      "poutine",
+      "hat",
+      "magnet",
+      "boots",
+      "board",
+      "jet",
+      "boost",
+    ];
     for (let i = 0; i < 52; i += 1) {
       const mesh = new THREE.Group();
       for (const kind of blueprints) {
@@ -1136,6 +1758,7 @@ export class ConeGame {
       c.position.x += 0.012;
       if (c.position.x > 420) c.position.x = -420;
     }
+    this.updateAtmosphere();
     this.renderer.render(this.scene, this.camera);
   }
 
@@ -1378,24 +2001,26 @@ export class ConeGame {
     road.position.y = 0;
     road.receiveShadow = true;
     group.add(road);
+    const street = new THREE.Group();
+    group.add(street);
     const sideMat = this.mat(new THREE.MeshStandardMaterial({ map: this.walkTex, roughness: 0.9, metalness: 0 }));
     for (const side of [-1, 1]) {
       const walk = new THREE.Mesh(this.geo(new THREE.PlaneGeometry(1.7, LEN)), sideMat);
       walk.rotation.x = -Math.PI / 2;
       walk.position.set(side * (ROAD_HALF + 0.85), 0.02, 0);
       walk.receiveShadow = true;
-      group.add(walk);
+      street.add(walk);
       const curb = new THREE.Mesh(this.geo(new THREE.BoxGeometry(0.16, 0.14, LEN)), this.lambert("#9b968d", 0.9));
       curb.position.set(side * (ROAD_HALF + 0.05), 0.06, 0);
       curb.receiveShadow = true;
-      group.add(curb);
+      street.add(curb);
     }
     const white = this.lambert("#f4efe8", 0.55);
     const yellow = this.lambert("#f0c43a");
     for (const x of [-ROAD_HALF + 0.08, ROAD_HALF - 0.08]) {
       const edge = new THREE.Mesh(this.geo(new THREE.BoxGeometry(0.08, 0.025, LEN)), yellow);
       edge.position.set(x, 0.03, 0);
-      group.add(edge);
+      street.add(edge);
     }
     const dashes = Math.floor(LEN / 4);
     for (let i = 0; i < dashes; i += 1) {
@@ -1403,14 +2028,14 @@ export class ConeGame {
       for (const x of [-LANE / 2, LANE / 2]) {
         const dash = new THREE.Mesh(this.geo(new THREE.BoxGeometry(0.1, 0.03, 1.5)), white);
         dash.position.set(x, 0.03, z);
-        group.add(dash);
+        street.add(dash);
       }
     }
     if (index % 3 === 1) {
       for (let i = 0; i < 6; i += 1) {
         const bar = new THREE.Mesh(this.geo(new THREE.BoxGeometry(ROAD_HALF * 2 - 0.2, 0.02, 0.35)), white);
         bar.position.set(0, 0.035, -4 + i * 0.7);
-        group.add(bar);
+        street.add(bar);
       }
     }
     for (const side of [-1, 1] as const) {
@@ -1424,27 +2049,28 @@ export class ConeGame {
         drum.traverse((m) => {
           if (m instanceof THREE.Mesh) m.castShadow = true;
         });
-        group.add(drum);
+        street.add(drum);
       }
       const tree = this.makeTree(rng);
       tree.traverse((m) => {
         if (m instanceof THREE.Mesh) m.castShadow = true;
       });
       tree.position.set(side * (ROAD_HALF + 1.15), 0, -6 + side * 4);
-      group.add(tree);
+      street.add(tree);
       if (rng() > 0.4) {
         const tree2 = this.makeTree(rng);
         tree2.position.set(side * (ROAD_HALF + 1.25), 0, 8);
-        group.add(tree2);
+        street.add(tree2);
       }
     }
-    this.dressBuildings(group, rng);
+    const lots = buildStreetLots(this.meshKit(), rng, LEN, ROAD_HALF, this.facades, this.shopTexs);
+    for (const lot of lots) group.add(lot.triplex, lot.downtown);
     const labels = ["TRAVAUX", "DÉTOUR", "RUE BARRÉE", "CONES"];
     const sign = this.makeSign(labels[index % labels.length]);
     const side = index % 2 === 0 ? -1 : 1;
     sign.position.set(side * (ROAD_HALF + 1.15), 0, 2);
     sign.rotation.y = side === -1 ? Math.PI / 2 : -Math.PI / 2;
-    group.add(sign);
+    street.add(sign);
 
     if (index % 2 === 0) {
       const steamMat = this.mat(
@@ -1460,117 +2086,336 @@ export class ConeGame {
       grate.rotation.x = -Math.PI / 2;
       grate.position.set(side * (ROAD_HALF + 0.7), 0.03, -8);
       puff.position.set(grate.position.x, 0.4, grate.position.z);
-      group.add(grate, puff);
+      street.add(grate, puff);
       this.steam.push({ mesh: puff, t: index * 0.37 });
     }
 
+    const tunnel = this.addTunnel();
+    tunnel.visible = false;
+    group.add(tunnel);
+    this.chunkRecs.push({ group, street, tunnel, road, lots });
     this.scene.add(group);
     return group;
   }
 
-  private dressBuildings(group: THREE.Group, rng: () => number) {
-    const widths = [6, 9, 9, 12];
-    const FLOOR = 3.2;
-    for (const side of [-1, 1] as const) {
-      let z = -LEN / 2 + 1.0;
-      while (z < LEN / 2 - 5) {
-        const depth = 3.6 + rng() * 1.4;
-        const width = widths[Math.floor(rng() * widths.length)];
-        const floors = 1 + Math.floor(rng() * 3) + (rng() > 0.8 ? 1 : 0);
-        const height = FLOOR * (floors + 1);
-        if (z + width > LEN / 2 - 0.3) break;
-        const set = this.facades[Math.floor(rng() * this.facades.length)];
-        const wallMat = this.lambert(set.base, 0.92);
-        const b = new THREE.Group();
-        const cx = side * (ROAD_HALF + 1.7 + depth / 2);
-        const cz = z + width / 2;
-        b.position.set(cx, 0, cz);
-        const body = new THREE.Mesh(this.geo(new THREE.BoxGeometry(depth, height, width)), wallMat);
-        body.position.y = height / 2;
-        body.castShadow = true;
-        body.receiveShadow = true;
-        b.add(body);
-        const cornice = new THREE.Mesh(
-          this.geo(new THREE.BoxGeometry(depth + 0.4, 0.34, width + 0.12)),
-          this.lambert("#e7dccb", 0.8),
-        );
-        cornice.position.y = height - 0.05;
-        cornice.castShadow = true;
-        b.add(cornice);
-        const parapet = new THREE.Mesh(
-          this.geo(new THREE.BoxGeometry(depth + 0.1, 0.5, width - 0.1)),
-          this.lambert("#8b8378", 0.95),
-        );
-        parapet.position.y = height + 0.25;
-        b.add(parapet);
-        // upper facade (repeating window tile) + ground-floor shopfront
-        const tex = set.tex.clone();
-        tex.needsUpdate = true;
-        this.texs.push(tex);
-        tex.repeat.set(width / 6, floors);
-        const facade = new THREE.Mesh(
-          this.geo(new THREE.PlaneGeometry(width, floors * FLOOR)),
-          this.mat(new THREE.MeshStandardMaterial({ map: tex, roughness: 0.78, metalness: 0 })),
-        );
-        const fx = -side * (depth / 2 + 0.02);
-        facade.position.set(fx, FLOOR + (floors * FLOOR) / 2, 0);
-        facade.rotation.y = side === 1 ? -Math.PI / 2 : Math.PI / 2;
-        facade.receiveShadow = true;
-        b.add(facade);
-        const shopTex = this.shopTexs[Math.floor(rng() * this.shopTexs.length)].clone();
-        shopTex.needsUpdate = true;
-        this.texs.push(shopTex);
-        shopTex.repeat.set(width / 6, 1);
-        const shop = new THREE.Mesh(
-          this.geo(new THREE.PlaneGeometry(width, FLOOR)),
-          this.mat(new THREE.MeshStandardMaterial({ map: shopTex, roughness: 0.7, metalness: 0 })),
-        );
-        shop.position.set(fx - side * 0.005, FLOOR / 2, 0);
-        shop.rotation.y = facade.rotation.y;
-        shop.receiveShadow = true;
-        b.add(shop);
-        // Montréal exterior staircase on some brick plexes
-        if (set.style === "brick" && rng() > 0.68) {
-          const iron = this.lambert("#262a2e", 0.5);
-          const run = Math.min(width * 0.6, 4.2);
-          const rise = FLOOR * 1.0;
-          const ang = Math.atan2(rise, run);
-          const len = Math.hypot(run, rise);
-          const sx = fx - side * 0.42;
-          const z0 = -run / 2;
-          const stringer = new THREE.Mesh(this.geo(new THREE.BoxGeometry(0.55, 0.08, len)), iron);
-          stringer.position.set(sx, rise / 2 + 0.1, z0 + run / 2);
-          stringer.rotation.x = -ang;
-          const hand = new THREE.Mesh(this.geo(new THREE.BoxGeometry(0.06, 0.06, len)), iron);
-          hand.position.set(sx - side * 0.42, rise / 2 + 1.0, z0 + run / 2);
-          hand.rotation.x = -ang;
-          const landing = new THREE.Mesh(this.geo(new THREE.BoxGeometry(1.2, 0.1, 1.3)), iron);
-          landing.position.set(sx, rise + 0.1, z0 + run + 0.6);
-          stringer.castShadow = true;
-          landing.castShadow = true;
-          b.add(stringer, hand, landing);
-          for (let q = 0; q <= 6; q += 1) {
-            const t = q / 6;
-            const post = new THREE.Mesh(this.geo(new THREE.BoxGeometry(0.04, 1.0, 0.04)), iron);
-            post.position.set(sx - side * 0.42, 0.1 + rise * t + 0.5, z0 + run * t);
-            b.add(post);
-          }
-        }
-        group.add(b);
-        this.bldgs.push({ g: b, chunk: group, z: cz, h: height });
-        z += width + 0.3 + rng() * 0.8;
+  private meshKit() {
+    return {
+      geo: <T extends THREE.BufferGeometry>(g: T) => this.geo(g),
+      mat: <T extends THREE.Material>(m: T) => this.mat(m),
+      tex: (t: THREE.Texture) => {
+        this.texs.push(t);
+      },
+    };
+  }
+
+  /** Stage mix, distance shrink, and the tunnel mouth. Called after the chunks have scrolled. */
+  private updateScenery() {
+    for (const rec of this.chunkRecs) {
+      const mark = this.scenic - rec.group.position.z;
+      const env = envAt(mark);
+      const inTunnel = subwayAmount(env) >= 0.5;
+      const down = downtownAmount(env);
+      rec.street.visible = !inTunnel;
+      rec.tunnel.visible = inTunnel;
+      rec.road.visible = !inTunnel;
+      for (const lot of rec.lots) {
+        const cut = (lot.z + LEN / 2) / LEN;
+        const showDown = down >= 0.999 || cut < down;
+        lot.downtown.visible = !inTunnel && showDown;
+        lot.triplex.visible = !inTunnel && !showDown;
+        const wz = rec.group.position.z + lot.z;
+        const far = Math.min(1, Math.max(0, (-wz - 55) / 110));
+        const f = 1 - 0.82 * far * far * (3 - 2 * far);
+        if (Math.abs(lot.triplex.scale.y - f) > 0.002) lot.triplex.scale.y = f;
+        if (Math.abs(lot.downtown.scale.y - f) > 0.002) lot.downtown.scale.y = f;
       }
+    }
+    if (this.portal) {
+      const z = this.scenic - SUBWAY_AT_M;
+      this.portal.position.z = z;
+      this.portal.visible = this.phase !== "attract" && z < 12 && z > -80;
     }
   }
 
-  /** Buildings shrink toward the far end of the street so the skyline opens up above it. */
-  private updateBuildings() {
-    for (const b of this.bldgs) {
-      const wz = b.chunk.position.z + b.z;
-      const t = Math.min(1, Math.max(0, (-wz - 55) / 110));
-      const f = 1 - 0.82 * t * t * (3 - 2 * t);
-      if (Math.abs(b.g.scale.y - f) > 0.002) b.g.scale.y = f;
+  private updateTrain(shift: number) {
+    if (!this.train || this.phase === "attract") {
+      if (this.train) this.train.visible = false;
+      return;
     }
+    if (!this.trainOn && this.phase === "playing" && this.scenic >= SUBWAY_AT_M + 50 && this.scenic >= this.nextTrainM) {
+      this.trainOn = true;
+      this.trainZ = -98;
+      this.trainSide = Math.random() < 0.5 ? -1 : 1;
+    }
+    if (this.trainOn) {
+      this.trainZ += shift * 1.72;
+      if (this.trainZ > 20) {
+        this.trainOn = false;
+        this.nextTrainM = this.scenic + 260 + Math.random() * 220;
+      }
+    }
+    const show = this.trainOn && this.scenic > SUBWAY_AT_M - 30;
+    this.train.visible = show;
+    if (show) this.train.position.set(this.trainSide * 4.15, 0, this.trainZ);
+  }
+
+  /** Daylight gives way to a dim, flickering tunnel, with a short blackout as you cross the mouth. */
+  private updateAtmosphere() {
+    const dist = this.scenic - SUBWAY_AT_M;
+    const t = smoothstep(dist, -42, 14);
+    const dark = this.phase === "attract" ? 0 : Math.exp(-(dist * dist) / 56);
+    const flicker = this.reduceMotion ? 1 : fluorFlicker(this.time);
+    const dim = 1 - dark * 0.88;
+    this.hemi.color.copy(this.streetHemi).lerp(this.tunnelHemi, t);
+    this.hemi.groundColor.copy(this.streetGround).lerp(this.tunnelGround, t);
+    this.hemi.intensity = (0.5 + (0.62 - 0.5) * t) * dim;
+    this.sun.intensity = (3.3 + (0.55 - 3.3) * t) * (1 - dark * 0.94);
+    this.rim.intensity = (0.5 * (1 - t)) * (1 - dark);
+    this.lamp.intensity = 34 * t * flicker * (1 - dark * 0.96);
+    this.lamp.visible = t > 0.08;
+    this.lamp.position.set(this.player.position.x * 0.25, 3.02, -5);
+    if (this.fluor) this.fluor.emissiveIntensity = (0.4 + 2.1 * t) * flicker * (1 - dark * 0.92);
+    this.tmpFog.copy(this.hazeColor).lerp(this.tunnelFog, t);
+    if (dark > 0.01) this.tmpFog.lerp(this.darkColor, dark * 0.86);
+    this.fog.color.copy(this.tmpFog);
+    this.fog.near = 55 + (22 - 55) * t;
+    this.fog.far = 760 + (128 - 760) * t;
+    this.bg.copy(this.tmpFog);
+    this.renderer.setClearColor(this.bg);
+    this.renderer.toneMappingExposure = (1.05 + (0.96 - 1.05) * t) * (1 - dark * 0.72);
+    this.scene.environmentIntensity = 0.32 * (1 - t * 0.85);
+    const buried = t > 0.82;
+    this.landmarks.group.visible = !buried;
+    for (const c of this.clouds) c.visible = t < 0.4;
+  }
+
+  private ensureTunnelAssets() {
+    if (this.tunnelBuilt) return;
+    this.tunnelBuilt = true;
+    const wallTex = tunnelConcreteTexture(mulberry32(21));
+    wallTex.repeat.set(LEN / 4, 1.4);
+    this.texs.push(wallTex);
+    const ballast = ballastTexture(mulberry32(22));
+    ballast.repeat.set(4, LEN / 4);
+    this.texs.push(ballast);
+    this.fluor = this.mat(
+      new THREE.MeshStandardMaterial({
+        color: "#d7e4f2",
+        emissive: "#eaf3ff",
+        emissiveIntensity: 0.9,
+        roughness: 0.35,
+      }),
+    );
+    const wallMat = this.mat(
+      new THREE.MeshStandardMaterial({ map: wallTex, roughness: 0.92, metalness: 0.02, side: THREE.DoubleSide }),
+    );
+    const floorMat = this.mat(new THREE.MeshStandardMaterial({ map: ballast, roughness: 0.96, metalness: 0 }));
+    const ceilMat = this.lambert("#2a2e34", 0.9);
+    const concrete = this.lambert("#4a5058", 0.88);
+    const railMat = this.mat(
+      new THREE.MeshStandardMaterial({ color: "#d5dde6", roughness: 0.28, metalness: 0.82, emissive: "#9aa8b8", emissiveIntensity: 0.18 }),
+    );
+    const sleeperMat = this.lambert("#3e342c", 0.96);
+    const yellow = this.lambert("#d7a400", 0.55);
+    this.tunnelWallMat = wallMat;
+    this.tunnelFloorMat = floorMat;
+    this.tunnelCeilMat = ceilMat;
+    this.tunnelConcrete = concrete;
+    this.railMat = railMat;
+    this.sleeperMat = sleeperMat;
+    this.safetyYellow = yellow;
+    this.railGeo = this.geo(new THREE.BoxGeometry(0.045, 0.05, LEN));
+    this.sleeperGeo = this.geo(new THREE.BoxGeometry(0.78, 0.035, 0.16));
+    this.columnGeo = this.geo(new THREE.BoxGeometry(0.32, 3.45, 0.32));
+    this.lampGeo = this.geo(new THREE.BoxGeometry(0.16, 0.05, 1.35));
+    this.wallGeo = this.geo(new THREE.PlaneGeometry(LEN, 3.55));
+    this.ceilGeo = this.geo(new THREE.PlaneGeometry(11.3, LEN));
+  }
+
+  private tunnelWallMat!: THREE.Material;
+  private tunnelFloorMat!: THREE.Material;
+  private tunnelCeilMat!: THREE.Material;
+  private tunnelConcrete!: THREE.Material;
+  private railMat!: THREE.Material;
+  private sleeperMat!: THREE.Material;
+  private safetyYellow!: THREE.Material;
+  private railGeo!: THREE.BufferGeometry;
+  private sleeperGeo!: THREE.BufferGeometry;
+  private columnGeo!: THREE.BufferGeometry;
+  private lampGeo!: THREE.BufferGeometry;
+  private wallGeo!: THREE.BufferGeometry;
+  private ceilGeo!: THREE.BufferGeometry;
+
+  /** Walls, ceiling, a centre-bore colonnade, rails in the lane gaps, and a side track for the train. */
+  private addTunnel() {
+    this.ensureTunnelAssets();
+    const g = new THREE.Group();
+    const floor = new THREE.Mesh(this.ceilGeo, this.tunnelFloorMat);
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.y = 0.02;
+    floor.receiveShadow = true;
+    g.add(floor);
+    const ceil = new THREE.Mesh(this.ceilGeo, this.tunnelCeilMat);
+    ceil.rotation.x = Math.PI / 2;
+    ceil.position.y = 3.48;
+    g.add(ceil);
+    const duct = new THREE.Mesh(this.geo(new THREE.BoxGeometry(0.35, 0.12, LEN)), this.tunnelConcrete);
+    duct.position.set(0, 3.38, 0);
+    g.add(duct);
+    for (const side of [-1, 1]) {
+      const wall = new THREE.Mesh(this.wallGeo, this.tunnelWallMat);
+      wall.position.set(side * 5.55, 1.78, 0);
+      wall.rotation.y = side === 1 ? -Math.PI / 2 : Math.PI / 2;
+      g.add(wall);
+      const stripe = new THREE.Mesh(this.geo(new THREE.BoxGeometry(0.06, 0.1, LEN)), this.safetyYellow);
+      stripe.position.set(side * 5.42, 0.18, 0);
+      g.add(stripe);
+    }
+    const placeRail = (x: number) => {
+      const rail = new THREE.Mesh(this.railGeo, this.railMat);
+      rail.position.set(x, 0.072, 0);
+      g.add(rail);
+    };
+    for (const center of [-LANE / 2, LANE / 2, -4.15, 4.15]) {
+      placeRail(center - 0.26);
+      placeRail(center + 0.26);
+    }
+    const tracks = [-LANE / 2, LANE / 2, -4.15, 4.15];
+    const per = Math.floor(LEN / 1.15);
+    const sleepers = new THREE.InstancedMesh(this.sleeperGeo, this.sleeperMat, per * tracks.length);
+    sleepers.frustumCulled = false;
+    const dummy = new THREE.Object3D();
+    let n = 0;
+    for (const cx of tracks) {
+      const wide = Math.abs(cx) > 3;
+      for (let s = 0; s < per; s += 1) {
+        dummy.position.set(cx, 0.045, -LEN / 2 + 0.5 + s * 1.15);
+        dummy.rotation.set(0, 0, 0);
+        dummy.scale.set(wide ? 1.45 : 1, 1, 1);
+        dummy.updateMatrix();
+        sleepers.setMatrixAt(n, dummy.matrix);
+        n += 1;
+      }
+    }
+    sleepers.instanceMatrix.needsUpdate = true;
+    g.add(sleepers);
+    const cols = 6;
+    const columns = new THREE.InstancedMesh(this.columnGeo, this.tunnelConcrete, cols * 2);
+    columns.frustumCulled = false;
+    n = 0;
+    for (const side of [-1, 1]) {
+      for (let s = 0; s < cols; s += 1) {
+        dummy.position.set(side * 2.95, 1.72, -LEN / 2 + 2.4 + s * (LEN / cols));
+        dummy.rotation.set(0, 0, 0);
+        dummy.scale.set(1, 1, 1);
+        dummy.updateMatrix();
+        columns.setMatrixAt(n, dummy.matrix);
+        n += 1;
+      }
+    }
+    columns.instanceMatrix.needsUpdate = true;
+    g.add(columns);
+    const lamps = new THREE.InstancedMesh(this.lampGeo, this.fluor, 4);
+    lamps.frustumCulled = false;
+    for (let s = 0; s < 4; s += 1) {
+      dummy.position.set(0, 3.28, -LEN / 2 + 4 + s * 7.2);
+      dummy.rotation.set(0, 0, 0);
+      dummy.scale.set(1, 1, 1);
+      dummy.updateMatrix();
+      lamps.setMatrixAt(s, dummy.matrix);
+    }
+    lamps.instanceMatrix.needsUpdate = true;
+    g.add(lamps);
+    return g;
+  }
+
+  private buildPortal() {
+    const g = new THREE.Group();
+    const concrete = this.lambert("#8d949e", 0.8);
+    const dark = this.lambert("#14171c", 0.95);
+    for (const x of [-3.62, 3.62]) {
+      const jamb = new THREE.Mesh(this.geo(new THREE.BoxGeometry(0.48, 3.55, 0.62)), concrete);
+      jamb.position.set(x, 1.78, 0);
+      g.add(jamb);
+    }
+    const lintel = new THREE.Mesh(this.geo(new THREE.BoxGeometry(7.75, 0.48, 0.66)), concrete);
+    lintel.position.set(0, 3.4, 0);
+    g.add(lintel);
+    const lip = new THREE.Mesh(this.geo(new THREE.BoxGeometry(6.7, 0.16, 0.28)), dark);
+    lip.position.set(0, 3.08, 0.28);
+    g.add(lip);
+    const tex = metroSignTexture("MÉTRO");
+    this.texs.push(tex);
+    const board = new THREE.Mesh(
+      this.geo(new THREE.PlaneGeometry(2.4, 0.72)),
+      this.mat(new THREE.MeshBasicMaterial({ map: tex })),
+    );
+    board.position.set(0, 2.95, 0.52);
+    g.add(board);
+    const glowMat = this.mat(
+      new THREE.MeshStandardMaterial({ color: "#ffb080", emissive: "#ff7a3c", emissiveIntensity: 1.4 }),
+    );
+    for (const x of [-2.4, 2.4]) {
+      const bulb = new THREE.Mesh(this.geo(new THREE.SphereGeometry(0.08, 8, 6)), glowMat);
+      bulb.position.set(x, 3.22, 0.36);
+      g.add(bulb);
+    }
+    g.visible = false;
+    this.portal = g;
+    this.scene.add(g);
+  }
+
+  private buildTrain() {
+    const g = new THREE.Group();
+    const bodyMat = this.mat(new THREE.MeshStandardMaterial({ color: "#e8eef3", roughness: 0.42, metalness: 0.22 }));
+    const doorMat = this.lambert("#ff5a1f", 0.48);
+    const winMat = this.mat(
+      new THREE.MeshStandardMaterial({
+        color: "#1b2836",
+        roughness: 0.12,
+        metalness: 0.45,
+        emissive: "#d5e6f4",
+        emissiveIntensity: 0.7,
+      }),
+    );
+    const under = this.lambert("#1a1c20", 0.8);
+    const stripe = this.lambert("#ff5a1f", 0.45);
+    const carLen = 6.3;
+    const gap = 0.38;
+    for (let i = 0; i < 3; i += 1) {
+      const z = (i - 1) * (carLen + gap);
+      const body = new THREE.Mesh(this.geo(new THREE.BoxGeometry(1.58, 2.05, carLen)), bodyMat);
+      body.position.set(0, 1.48, z);
+      const skirt = new THREE.Mesh(this.geo(new THREE.BoxGeometry(1.68, 0.32, carLen)), under);
+      skirt.position.set(0, 0.42, z);
+      const roof = new THREE.Mesh(this.geo(new THREE.BoxGeometry(1.2, 0.06, carLen * 0.92)), stripe);
+      roof.position.set(0, 2.54, z);
+      g.add(body, skirt, roof);
+      for (const dz of [-1.35, 1.35]) {
+        for (const x of [-0.8, 0.8]) {
+          const door = new THREE.Mesh(this.geo(new THREE.BoxGeometry(0.03, 1.45, 0.72)), doorMat);
+          door.position.set(x, 1.32, z + dz);
+          g.add(door);
+        }
+      }
+      for (const x of [-0.81, 0.81]) {
+        const win = new THREE.Mesh(this.geo(new THREE.BoxGeometry(0.03, 0.48, carLen * 0.72)), winMat);
+        win.position.set(x, 1.9, z);
+        g.add(win);
+      }
+    }
+    const frontZ = carLen + gap + carLen / 2;
+    const lampMat = this.mat(
+      new THREE.MeshStandardMaterial({ color: "#fff4d2", emissive: "#ffe7a2", emissiveIntensity: 1.8 }),
+    );
+    for (const x of [-0.42, 0.42]) {
+      const head = new THREE.Mesh(this.geo(new THREE.BoxGeometry(0.16, 0.1, 0.05)), lampMat);
+      head.position.set(x, 1.15, frontZ);
+      g.add(head);
+    }
+    g.visible = false;
+    this.train = g;
+    this.scene.add(g);
   }
 
   private makeTree(rng: () => number) {
@@ -1683,30 +2528,106 @@ export class ConeGame {
     return g;
   }
 
+  private makePothole() {
+    if (!this.pitProto) this.pitProto = this.createPothole();
+    return this.pitProto.clone();
+  }
+
+  private createPothole() {
+    const g = new THREE.Group();
+    const tex = potholeTexture(mulberry32(11));
+    this.texs.push(tex);
+    const mat = this.mat(
+      new THREE.MeshStandardMaterial({
+        map: tex,
+        roughness: 0.97,
+        metalness: 0.02,
+        side: THREE.DoubleSide,
+        polygonOffset: true,
+        polygonOffsetFactor: -2,
+        polygonOffsetUnits: -2,
+      }),
+    );
+    const dish = new THREE.Mesh(this.geo(potholeGeometry()), mat);
+    dish.castShadow = true;
+    dish.receiveShadow = true;
+    const core = new THREE.Mesh(
+      this.geo(new THREE.CircleGeometry(0.26, 16)),
+      this.mat(new THREE.MeshBasicMaterial({ color: "#070605" })),
+    );
+    core.rotation.x = -Math.PI / 2;
+    core.position.y = 0.062;
+    g.add(dish, core);
+    const crackMat = this.mat(new THREE.MeshBasicMaterial({ color: "#0b0a09" }));
+    const crackGeo = this.geo(new THREE.BoxGeometry(0.03, 0.012, 0.46));
+    for (const a of [0.32, 1.12, 2.02, 2.78, 3.85, 4.7, 5.55]) {
+      const crack = new THREE.Mesh(crackGeo, crackMat);
+      crack.position.set(Math.cos(a) * 0.9, 0.058, Math.sin(a) * 0.9);
+      crack.rotation.y = Math.PI / 2 - a;
+      g.add(crack);
+    }
+    const dark = this.lambert("#2a2826", 0.96);
+    const light = this.lambert("#7a7368", 0.9);
+    const chipGeo = this.geo(new THREE.BoxGeometry(1, 1, 1));
+    const chips: [number, number, number, number, number, number, boolean][] = [
+      [0.45, 0.76, 0.16, 0.05, 0.11, 0.13, true],
+      [1.45, 0.66, 0.1, 0.07, 0.13, 0.1, false],
+      [2.25, 0.84, 0.14, 0.045, 0.09, 0.12, true],
+      [3.2, 0.58, 0.08, 0.06, 0.1, 0.09, false],
+      [4.15, 0.8, 0.13, 0.05, 0.08, 0.125, true],
+      [5.25, 0.7, 0.09, 0.08, 0.09, 0.11, false],
+      [0.95, 0.3, 0.07, 0.04, 0.06, 0.075, false],
+    ];
+    for (const [a, r, sx, sy, sz, y, pale] of chips) {
+      const chip = new THREE.Mesh(chipGeo, pale ? light : dark);
+      chip.scale.set(sx, sy, sz);
+      chip.position.set(Math.cos(a) * r, y, Math.sin(a) * r);
+      chip.rotation.set(0.35, a, 0.25);
+      chip.castShadow = true;
+      g.add(chip);
+    }
+    return g;
+  }
+
   private makeKind(kind: Kind) {
     const g = new THREE.Group();
     if (kind === "cone") {
       g.add(this.makeBarrel(1));
     } else if (kind === "pit") {
-      const spray = new THREE.Mesh(
-        this.geo(new THREE.RingGeometry(0.62, 0.95, 22)),
-        this.mat(new THREE.MeshLambertMaterial({ color: "#ff6a2a", side: THREE.DoubleSide })),
+      g.add(this.makePothole());
+    } else if (kind === "pillar") {
+      const shaft = new THREE.Mesh(
+        this.geo(new THREE.BoxGeometry(0.62, 3.35, 0.62)),
+        this.lambert("#6a7078", 0.9),
       );
-      spray.rotation.x = -Math.PI / 2;
-      spray.position.y = 0.03;
-      const rim = new THREE.Mesh(
-        this.geo(new THREE.CircleGeometry(0.62, 20)),
-        this.mat(new THREE.MeshLambertMaterial({ color: "#3a332c", side: THREE.DoubleSide })),
-      );
-      rim.rotation.x = -Math.PI / 2;
-      rim.position.y = 0.036;
-      const hole = new THREE.Mesh(
-        this.geo(new THREE.CircleGeometry(0.38, 16)),
-        this.mat(new THREE.MeshLambertMaterial({ color: "#100e0c", side: THREE.DoubleSide })),
-      );
-      hole.rotation.x = -Math.PI / 2;
-      hole.position.y = 0.042;
-      g.add(spray, rim, hole);
+      shaft.position.y = 1.68;
+      const cap = new THREE.Mesh(this.geo(new THREE.BoxGeometry(0.78, 0.12, 0.78)), this.lambert("#5a6068", 0.85));
+      cap.position.y = 3.28;
+      const band = new THREE.Mesh(this.geo(new THREE.BoxGeometry(0.66, 0.16, 0.66)), this.lambert("#e0b000", 0.5));
+      band.position.y = 0.28;
+      const band2 = new THREE.Mesh(this.geo(new THREE.BoxGeometry(0.66, 0.1, 0.66)), this.lambert("#161616", 0.8));
+      band2.position.y = 0.48;
+      g.add(shaft, cap, band, band2);
+    } else if (kind === "sign") {
+      if (!this.signMats.length) {
+        for (const name of STATION_NAMES) {
+          const tex = metroSignTexture(name);
+          this.texs.push(tex);
+          this.signMats.push(this.mat(new THREE.MeshBasicMaterial({ map: tex })));
+        }
+      }
+      const board = new THREE.Mesh(this.geo(new THREE.PlaneGeometry(1.55, 0.48)), this.signMats[0]);
+      board.name = "board";
+      board.position.y = 1.28;
+      const hanger = this.lambert("#9aa3ad", 0.4);
+      const bar = new THREE.Mesh(this.geo(new THREE.BoxGeometry(1.35, 0.05, 0.05)), hanger);
+      bar.position.y = 2.15;
+      for (const x of [-0.55, 0.55]) {
+        const rod = new THREE.Mesh(this.geo(new THREE.CylinderGeometry(0.02, 0.02, 0.78, 6)), hanger);
+        rod.position.set(x, 1.72, 0);
+        g.add(rod);
+      }
+      g.add(board, bar);
     } else if (kind === "barrier") {
       const body = new THREE.Mesh(this.geo(new THREE.BoxGeometry(1.4, 0.5, 0.36)), this.lambert("#ff5a1f"));
       body.position.y = 0.32;
@@ -1779,8 +2700,133 @@ export class ConeGame {
       const r = new THREE.Mesh(this.geo(new THREE.BoxGeometry(0.08, 0.16, 0.1)), tipMat);
       r.position.set(0.22, 0.7, 0);
       g.add(u, l, r);
+    } else if (kind === "boots") {
+      const leather = this.lambert("#f0b429", 0.45);
+      const toe = this.lambert("#1e1e22", 0.4);
+      for (const x of [-0.12, 0.12]) {
+        const boot = new THREE.Mesh(this.geo(new THREE.BoxGeometry(0.16, 0.14, 0.28)), leather);
+        boot.position.set(x, 0.62, 0);
+        const cap = new THREE.Mesh(this.geo(new THREE.BoxGeometry(0.16, 0.08, 0.1)), toe);
+        cap.position.set(x, 0.6, 0.1);
+        g.add(boot, cap);
+      }
+    } else if (kind === "board") {
+      const deck = new THREE.Mesh(this.geo(new THREE.BoxGeometry(0.78, 0.05, 0.26)), this.lambert("#c4a574", 0.55));
+      deck.position.y = 0.7;
+      const band = new THREE.Mesh(this.geo(new THREE.BoxGeometry(0.8, 0.02, 0.08)), this.lambert("#ff5a1f", 0.4));
+      band.position.y = 0.74;
+      g.add(deck, band);
+    } else if (kind === "jet") {
+      const tankMat = this.lambert("#ff5a1f", 0.4);
+      const metal = this.lambert("#d5d8dd", 0.25);
+      const left = new THREE.Mesh(this.geo(new THREE.CylinderGeometry(0.08, 0.08, 0.32, 8)), tankMat);
+      left.position.set(-0.1, 0.78, 0);
+      const right = new THREE.Mesh(this.geo(new THREE.CylinderGeometry(0.08, 0.08, 0.32, 8)), tankMat);
+      right.position.set(0.1, 0.78, 0);
+      const valve = new THREE.Mesh(this.geo(new THREE.BoxGeometry(0.28, 0.06, 0.08)), metal);
+      valve.position.y = 0.96;
+      g.add(left, right, valve);
+    } else if (kind === "boost") {
+      const cup = new THREE.Mesh(this.geo(new THREE.CylinderGeometry(0.15, 0.12, 0.3, 10)), this.lambert("#f7f4ef"));
+      cup.position.y = 0.7;
+      const sleeve = new THREE.Mesh(this.geo(new THREE.CylinderGeometry(0.165, 0.14, 0.12, 10)), this.lambert("#f2d15a"));
+      sleeve.position.y = 0.68;
+      const card = new THREE.Mesh(this.geo(new THREE.PlaneGeometry(0.36, 0.18)), this.boostCardMat());
+      card.position.set(0, 1.02, 0);
+      g.add(cup, sleeve, card);
     }
     return g;
+  }
+
+  private boostCardMat() {
+    if (this.boostMat) return this.boostMat;
+    const canvas = document.createElement("canvas");
+    canvas.width = 128;
+    canvas.height = 64;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      this.boostMat = this.mat(new THREE.MeshStandardMaterial({ color: 0xf2d15a, roughness: 0.4 }));
+      return this.boostMat;
+    }
+    ctx.fillStyle = "#1a120c";
+    ctx.fillRect(0, 0, 128, 64);
+    ctx.fillStyle = "#ff5a1f";
+    ctx.fillRect(0, 0, 128, 12);
+    ctx.fillStyle = "#fff6ea";
+    ctx.font = "700 42px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("x2", 64, 40);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    this.texs.push(tex);
+    this.boostMat = this.mat(
+      new THREE.MeshStandardMaterial({ map: tex, color: 0xffffff, roughness: 0.4, side: THREE.DoubleSide }),
+    );
+    return this.boostMat;
+  }
+
+  private buildGear() {
+    const wood = this.lambert("#c4a574", 0.6);
+    const stripe = this.lambert("#ff5a1f", 0.4);
+    this.boardMesh = new THREE.Group();
+    const deck = new THREE.Mesh(this.geo(new THREE.BoxGeometry(0.72, 0.045, 0.28)), wood);
+    deck.position.y = 0.05;
+    const band = new THREE.Mesh(this.geo(new THREE.BoxGeometry(0.74, 0.018, 0.08)), stripe);
+    band.position.y = 0.08;
+    this.boardMesh.add(deck, band);
+    this.boardMesh.visible = false;
+
+    this.jetMesh = new THREE.Group();
+    const tankMat = this.lambert("#ff5a1f", 0.45);
+    const metal = this.lambert("#d5d8dd", 0.3);
+    const tankL = new THREE.Mesh(this.geo(new THREE.CylinderGeometry(0.065, 0.065, 0.26, 8)), tankMat);
+    tankL.position.set(-0.12, 1.02, 0.16);
+    const tankR = new THREE.Mesh(this.geo(new THREE.CylinderGeometry(0.065, 0.065, 0.26, 8)), tankMat);
+    tankR.position.set(0.12, 1.02, 0.16);
+    const nozzle = new THREE.Mesh(this.geo(new THREE.BoxGeometry(0.28, 0.05, 0.08)), metal);
+    nozzle.position.set(0, 0.88, 0.18);
+    const flameMat = this.mat(new THREE.MeshBasicMaterial({ color: 0xffb020, transparent: true, opacity: 0.9 }));
+    this.flameL = new THREE.Mesh(this.geo(new THREE.ConeGeometry(0.055, 0.2, 6)), flameMat);
+    this.flameL.position.set(-0.12, 0.76, 0.16);
+    this.flameL.rotation.x = Math.PI;
+    this.flameR = new THREE.Mesh(this.geo(new THREE.ConeGeometry(0.055, 0.2, 6)), flameMat);
+    this.flameR.position.set(0.12, 0.76, 0.16);
+    this.flameR.rotation.x = Math.PI;
+    this.flameL.castShadow = false;
+    this.flameR.castShadow = false;
+    this.jetMesh.add(tankL, tankR, nozzle, this.flameL, this.flameR);
+    this.jetMesh.visible = false;
+
+    const glowMat = this.mat(
+      new THREE.MeshBasicMaterial({
+        color: 0xffe14a,
+        transparent: true,
+        opacity: 0.75,
+        side: THREE.DoubleSide,
+      }),
+    );
+    this.bootGlow = new THREE.Mesh(this.geo(new THREE.RingGeometry(0.16, 0.32, 16)), glowMat);
+    this.bootGlow.rotation.x = -Math.PI / 2;
+    this.bootGlow.position.y = 0.04;
+    this.bootGlow.visible = false;
+    this.bootGlow.castShadow = false;
+
+    this.visual.add(this.boardMesh, this.jetMesh, this.bootGlow);
+  }
+
+  private updateGear() {
+    const riding = this.boardHits > 0 && this.phase !== "dead";
+    const flying = this.jetT > 0 && this.phase !== "dead";
+    this.boardMesh.visible = riding;
+    this.jetMesh.visible = flying;
+    this.bootGlow.visible = this.bootsT > 0 && this.phase !== "dead" && this.y < 0.25;
+    if (flying) {
+      const flicker = 0.65 + Math.abs(Math.sin(this.time * 42)) * 0.55;
+      this.flameL.scale.y = flicker;
+      this.flameR.scale.y = 1.2 - flicker * 0.35;
+    }
+    if (this.bootGlow.visible) this.bootGlow.scale.setScalar(1 + Math.sin(this.time * 14) * 0.08);
   }
 
   private buildPlayer() {

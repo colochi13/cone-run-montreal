@@ -247,6 +247,168 @@ export function cloudTexture() {
   return tex;
 }
 
+/**
+ * Cracked-asphalt pothole, mapped radially (centre of the canvas = bottom of the hole).
+ * A light broken collar and a near-black core stay readable when the mesh is small on screen.
+ */
+export function potholeTexture(rng: Rng) {
+  const S = 256;
+  const { c, g } = canvas(S, S);
+  if (g) {
+    const cx = S / 2;
+    const cy = S / 2;
+    g.fillStyle = "#3c3a36";
+    g.fillRect(0, 0, S, S);
+    const bowl = g.createRadialGradient(cx, cy, S * 0.08, cx, cy, S * 0.49);
+    bowl.addColorStop(0, "#070605");
+    bowl.addColorStop(0.28, "#141210");
+    bowl.addColorStop(0.55, "#2a2723");
+    bowl.addColorStop(0.74, "#8f877b");
+    bowl.addColorStop(0.86, "#5c564e");
+    bowl.addColorStop(1, "#3c3a36");
+    g.fillStyle = bowl;
+    g.fillRect(0, 0, S, S);
+    for (let i = 0; i < 900; i += 1) {
+      const a = rng() * Math.PI * 2;
+      const r = rng() ** 0.55 * S * 0.32;
+      const v = 48 + rng() * 90;
+      g.fillStyle = `rgba(${v},${v - 10},${v - 22},${0.35 + rng() * 0.4})`;
+      g.fillRect(cx + Math.cos(a) * r, cy + Math.sin(a) * r, 1.2 + rng() * 2.2, 1.2 + rng() * 1.6);
+    }
+    const core = g.createRadialGradient(cx, cy + 4, 2, cx, cy, S * 0.2);
+    core.addColorStop(0, "rgba(2,2,2,0.95)");
+    core.addColorStop(1, "rgba(2,2,2,0)");
+    g.fillStyle = core;
+    g.fillRect(0, 0, S, S);
+    g.lineCap = "round";
+    g.lineJoin = "round";
+    for (let i = 0; i < 10; i += 1) {
+      const a0 = (i / 10) * Math.PI * 2 + rng() * 0.15;
+      g.strokeStyle = `rgba(4,3,3,${0.75 + rng() * 0.25})`;
+      g.lineWidth = 1.1 + rng() * 1.6;
+      g.beginPath();
+      let a = a0;
+      g.moveTo(cx + Math.cos(a) * 8, cy + Math.sin(a) * 8);
+      const steps = 8;
+      for (let k = 1; k <= steps; k += 1) {
+        a += (rng() - 0.5) * 0.42;
+        const rad = 10 + k * (11 + rng() * 6);
+        const x = cx + Math.cos(a) * rad;
+        const y = cy + Math.sin(a) * rad;
+        g.lineTo(x, y);
+        if (k > 3 && rng() > 0.62) {
+          const b = a + (rng() > 0.5 ? 0.7 : -0.7);
+          const br = rad + 14 + rng() * 18;
+          g.lineTo(cx + Math.cos(b) * br, cy + Math.sin(b) * br);
+          g.moveTo(x, y);
+        }
+      }
+      g.stroke();
+    }
+    for (let i = 0; i < 16; i += 1) {
+      const a = rng() * Math.PI * 2;
+      const r = S * (0.33 + rng() * 0.12);
+      g.fillStyle = `rgba(${120 + rng() * 70},${112 + rng() * 60},${98 + rng() * 50},0.75)`;
+      g.beginPath();
+      g.ellipse(cx + Math.cos(a) * r, cy + Math.sin(a) * r, 3 + rng() * 9, 2 + rng() * 4, a, 0, Math.PI * 2);
+      g.fill();
+    }
+    // Faded lane paint, broken where the hole ate it — a real street, and it reads at speed.
+    g.strokeStyle = "rgba(236,230,214,0.5)";
+    g.lineWidth = 11;
+    g.lineCap = "butt";
+    g.beginPath();
+    g.moveTo(8, cy + 14);
+    g.lineTo(cx - S * 0.2, cy + 6);
+    g.moveTo(cx + S * 0.22, cy - 8);
+    g.lineTo(S - 8, cy - 2);
+    g.stroke();
+  }
+  const tex = finish(c, true);
+  tex.wrapS = THREE.ClampToEdgeWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  return tex;
+}
+
+/** Poured concrete for métro walls. One tile; the caller sets repeat. */
+export function tunnelConcreteTexture(rng: Rng) {
+  const S = 256;
+  const { c, g } = canvas(S, S);
+  if (g) {
+    g.fillStyle = "#3e434a";
+    g.fillRect(0, 0, S, S);
+    for (let i = 0; i < 4000; i += 1) {
+      const v = 50 + rng() * 40;
+      g.fillStyle = `rgba(${v},${v + 2},${v + 6},${0.18 + rng() * 0.28})`;
+      g.fillRect(rng() * S, rng() * S, 1 + rng(), 1 + rng());
+    }
+    g.fillStyle = "rgba(20,22,26,0.35)";
+    for (let y = 0; y < S; y += 64) g.fillRect(0, y, S, 3);
+    // tile band, the cream stripe older Montréal stations use
+    g.fillStyle = "#cfc6b4";
+    g.fillRect(0, 150, S, 28);
+    g.fillStyle = "rgba(0,0,0,0.15)";
+    for (let x = 0; x < S; x += 32) g.fillRect(x, 150, 2, 28);
+    for (let i = 0; i < 18; i += 1) {
+      g.fillStyle = `rgba(20,18,16,${0.15 + rng() * 0.25})`;
+      g.beginPath();
+      g.ellipse(rng() * S, rng() * S, 10 + rng() * 30, 6 + rng() * 16, rng(), 0, Math.PI * 2);
+      g.fill();
+    }
+    for (let i = 0; i < 8; i += 1) {
+      g.fillStyle = "rgba(10,10,12,0.45)";
+      g.beginPath();
+      g.arc(rng() * S, 40 + rng() * 80, 3, 0, Math.PI * 2);
+      g.fill();
+    }
+  }
+  return finish(c, true);
+}
+
+/** Dark track ballast. One tile; the caller sets repeat. */
+export function ballastTexture(rng: Rng) {
+  const S = 256;
+  const { c, g } = canvas(S, S);
+  if (g) {
+    g.fillStyle = "#3c4048";
+    g.fillRect(0, 0, S, S);
+    for (let i = 0; i < 2200; i += 1) {
+      const v = 48 + rng() * 70;
+      g.fillStyle = `rgb(${v},${v - 2},${v - 4})`;
+      const s = 2 + rng() * 5;
+      g.fillRect(rng() * S, rng() * S, s, s * (0.6 + rng() * 0.5));
+    }
+    for (let i = 0; i < 5; i += 1) {
+      g.fillStyle = `rgba(10,10,12,${0.25 + rng() * 0.25})`;
+      g.fillRect(rng() * S, rng() * S, 30 + rng() * 70, 16 + rng() * 40);
+    }
+  }
+  return finish(c, true);
+}
+
+/** Hanging platform sign. Dark panel, orange stripe, white station name. */
+export function metroSignTexture(label: string) {
+  const W = 512;
+  const H = 160;
+  const { c, g } = canvas(W, H);
+  if (g) {
+    g.fillStyle = "#14171c";
+    g.fillRect(0, 0, W, H);
+    g.fillStyle = "#ff5a1f";
+    g.fillRect(0, 0, W, 16);
+    g.fillRect(0, H - 16, W, 16);
+    g.fillStyle = "#f4efe6";
+    g.font = "700 64px sans-serif";
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.fillText(label, W / 2, H / 2 + 2);
+  }
+  const tex = finish(c, true, 4);
+  tex.wrapS = THREE.ClampToEdgeWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  return tex;
+}
+
 /** Glass curtain-wall for the skyline towers. Tile = a few floors; windows are horizontal bands. */
 export function glassTexture(tint: string) {
   const W = 128;
