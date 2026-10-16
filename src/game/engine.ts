@@ -48,13 +48,50 @@ export type Hud = {
   heat: number;
   newBest: boolean;
   nears: number;
+  /** Seconds left on the steel-toe jump. */
+  boots: number;
+  /** Hits the plywood board can still soak. */
+  board: number;
+  /** Seconds left on the propane hover. */
+  jet: number;
+  /** Seconds left on the double-espresso multiplier. */
+  boost: number;
+  /** Combo × espresso. 1 means nothing special is stacking. */
+  mult: number;
+  mission: MissionHud | null;
 };
 
-type Kind = Cause | "coin" | "poutine" | "hat" | "magnet";
+export type MissionHud = {
+  label: string;
+  progress: number;
+  goal: number;
+  index: number;
+  total: number;
+};
+
+type Kind = Cause | "coin" | "poutine" | "hat" | "magnet" | "boots" | "board" | "jet" | "boost";
 
 type Spawn = { z: number; lane: -1 | 0 | 1; kind: Kind; hint?: string };
 
-type Pattern = { len: number; min: number; spawns: Spawn[] };
+/** spice 0 stays common. Higher spice is picked more often as the run gets long. */
+type Pattern = { len: number; min: number; spawns: Spawn[]; spice?: number };
+
+type MissionId = "meters" | "coins" | "nears" | "power" | "combo";
+
+type MissionDef = { id: MissionId; goal: number; label: string };
+
+function isPickup(kind: Kind) {
+  return (
+    kind === "coin" ||
+    kind === "poutine" ||
+    kind === "hat" ||
+    kind === "magnet" ||
+    kind === "boots" ||
+    kind === "board" ||
+    kind === "jet" ||
+    kind === "boost"
+  );
+}
 
 type Ent = {
   kind: Kind;
@@ -217,6 +254,7 @@ const PATTERNS: Pattern[] = [
   {
     len: 28,
     min: 40,
+    spice: 2,
     spawns: [
       { z: 0, lane: -1, kind: "pit" },
       { z: 0, lane: 0, kind: "pit" },
@@ -226,6 +264,7 @@ const PATTERNS: Pattern[] = [
   {
     len: 28,
     min: 50,
+    spice: 2,
     spawns: [
       { z: 0, lane: -1, kind: "scaffold" },
       { z: 0, lane: 0, kind: "scaffold" },
@@ -289,6 +328,44 @@ const PATTERNS: Pattern[] = [
       { z: 10, lane: -1, kind: "poutine" },
     ],
   },
+  {
+    len: 24,
+    min: 70,
+    spice: 1,
+    spawns: [
+      { z: 0, lane: 1, kind: "cone" },
+      { z: 0, lane: -1, kind: "boots" },
+    ],
+  },
+  {
+    len: 26,
+    min: 110,
+    spice: 1,
+    spawns: [
+      { z: 0, lane: 0, kind: "board" },
+      { z: 6, lane: 1, kind: "coin" },
+      { z: 9, lane: 1, kind: "coin" },
+    ],
+  },
+  {
+    len: 28,
+    min: 180,
+    spice: 1,
+    spawns: [
+      { z: 0, lane: -1, kind: "barrier" },
+      { z: 0, lane: 1, kind: "jet" },
+    ],
+  },
+  {
+    len: 24,
+    min: 90,
+    spice: 1,
+    spawns: [
+      { z: 0, lane: 0, kind: "boost" },
+      { z: 5, lane: 0, kind: "coin" },
+      { z: 8, lane: 0, kind: "coin" },
+    ],
+  },
 ];
 
 /** Obstacles that belong underground. Same lanes and the same dodge / jump / slide verbs. */
@@ -299,6 +376,7 @@ const SUBWAY_PATTERNS: Pattern[] = [
   {
     len: 24,
     min: 0,
+    spice: 2,
     spawns: [
       { z: 0, lane: -1, kind: "pillar" },
       { z: 0, lane: 1, kind: "pillar" },
@@ -308,6 +386,7 @@ const SUBWAY_PATTERNS: Pattern[] = [
   {
     len: 26,
     min: 0,
+    spice: 2,
     spawns: [
       { z: 0, lane: -1, kind: "sign" },
       { z: 0, lane: 0, kind: "sign" },
@@ -317,6 +396,7 @@ const SUBWAY_PATTERNS: Pattern[] = [
   {
     len: 28,
     min: 0,
+    spice: 2,
     spawns: [
       { z: 0, lane: 0, kind: "pillar" },
       { z: 12, lane: -1, kind: "sign" },
@@ -327,6 +407,7 @@ const SUBWAY_PATTERNS: Pattern[] = [
   {
     len: 28,
     min: 0,
+    spice: 2,
     spawns: [
       { z: 0, lane: -1, kind: "pit" },
       { z: 0, lane: 0, kind: "pit" },
@@ -369,9 +450,54 @@ const SUBWAY_PATTERNS: Pattern[] = [
       { z: 8, lane: -1, kind: "poutine" },
     ],
   },
+  {
+    len: 24,
+    min: 0,
+    spice: 1,
+    spawns: [
+      { z: 0, lane: 1, kind: "pillar" },
+      { z: 0, lane: -1, kind: "boots" },
+    ],
+  },
+  {
+    len: 26,
+    min: 0,
+    spice: 1,
+    spawns: [
+      { z: 0, lane: 0, kind: "jet" },
+      { z: 8, lane: 1, kind: "sign" },
+    ],
+  },
+  {
+    len: 24,
+    min: 0,
+    spice: 1,
+    spawns: [
+      { z: 0, lane: -1, kind: "board" },
+      { z: 5, lane: 1, kind: "coin" },
+    ],
+  },
+  {
+    len: 24,
+    min: 0,
+    spice: 1,
+    spawns: [{ z: 0, lane: 0, kind: "boost" }],
+  },
 ];
 
 const STATION_NAMES = ["SHERBROOKE", "MONT-ROYAL", "LAURIER", "BEAUBIEN", "JEAN-TALON"];
+
+/** Three of these are dealt at the start of a run. Progress is counted from the moment each one starts. */
+const MISSION_DEFS: MissionDef[] = [
+  { id: "meters", goal: 200, label: "Cours 200 m" },
+  { id: "meters", goal: 450, label: "Cours 450 m" },
+  { id: "coins", goal: 12, label: "12 cafés" },
+  { id: "coins", goal: 25, label: "25 cafés" },
+  { id: "nears", goal: 3, label: "3 proches" },
+  { id: "nears", goal: 6, label: "6 proches" },
+  { id: "power", goal: 1, label: "Un power-up" },
+  { id: "combo", goal: 4, label: "Combo x4" },
+];
 
 function introScript(): Pattern[] {
   return [
@@ -445,6 +571,27 @@ export class ConeGame {
   private invuln = 0;
   private hat = false;
   private magnetT = 0;
+  private bootsT = 0;
+  private boardT = 0;
+  private boardHits = 0;
+  private jetT = 0;
+  private boostT = 0;
+  private combo = 0;
+  private comboT = 0;
+  private powersUsed = 0;
+  private scoreAcc = 0;
+  private missions: MissionDef[] = [];
+  private missionI = 0;
+  private missionBaseMeters = 0;
+  private missionBaseCoins = 0;
+  private missionBaseNears = 0;
+  private missionBasePowers = 0;
+  private boardMesh!: THREE.Group;
+  private jetMesh!: THREE.Group;
+  private flameL!: THREE.Mesh;
+  private flameR!: THREE.Mesh;
+  private bootGlow!: THREE.Mesh;
+  private boostMat: THREE.MeshStandardMaterial | null = null;
   private hitstop = 0;
   private shake = 0;
   private deathT = 0;
@@ -615,6 +762,7 @@ export class ConeGame {
     this.buildPortal();
     this.buildTrain();
     this.buildPlayer();
+    this.buildGear();
     this.shadow = this.makeShadow();
     this.bubble = this.makeBubble();
     this.player.add(this.bubble);
@@ -770,7 +918,7 @@ export class ConeGame {
       phase: this.phase,
       meters,
       coins: this.coins,
-      score: meters + this.coins * 10 + this.nears * 25,
+      score: Math.floor(this.scoreAcc),
       best: this.best,
       lane: this.laneTarget,
       hat: this.hat,
@@ -782,6 +930,12 @@ export class ConeGame {
       heat: Math.min(1, Math.max(0, (this.speed - 16) / 14)),
       newBest: this.newBest,
       nears: this.nears,
+      boots: this.bootsT,
+      board: this.boardHits,
+      jet: this.jetT,
+      boost: this.boostT,
+      mult: this.scoreMult(),
+      mission: this.missionHud(),
     };
   }
 
@@ -819,6 +973,18 @@ export class ConeGame {
     this.invuln = 0;
     this.hat = false;
     this.magnetT = 0;
+    this.bootsT = 0;
+    this.boardT = 0;
+    this.boardHits = 0;
+    this.jetT = 0;
+    this.boostT = 0;
+    this.combo = 0;
+    this.comboT = 0;
+    this.powersUsed = 0;
+    this.scoreAcc = 0;
+    this.missions = phase === "playing" ? this.rollMissions() : [];
+    this.missionI = 0;
+    this.snapMissionBase();
     this.hitstop = 0;
     this.shake = 0;
     this.deathT = 0;
@@ -864,8 +1030,11 @@ export class ConeGame {
     if (this.phase === "playing") {
       const target = Math.min(30, 15 + this.meters * 0.012);
       this.speed += (target - this.speed) * Math.min(1, sdt * 0.7);
-      this.meters += this.speed * sdt;
+      const dm = this.speed * sdt;
+      this.meters += dm;
+      this.scoreAcc += dm * (this.boostT > 0 ? 2 : 1);
       this.sfx.updatePitchBySpeed(this.speed, 30, sdt);
+      this.tickPowers(dt);
     } else if (this.phase === "attract") {
       this.speed = 10;
     } else {
@@ -908,8 +1077,143 @@ export class ConeGame {
     this.updateFloaters();
     this.updateSteam(dt);
     this.updateParticles(dt);
-    if (this.phase === "playing") this.collide();
+    if (this.phase === "playing") {
+      this.collide();
+      this.tickMissions();
+    }
+    this.updateGear();
     this.shake *= Math.exp(-dt * 5);
+  }
+
+  /** Power-up clocks freeze while the run is paused. The combo drops if nothing feeds it. */
+  private tickPowers(dt: number) {
+    if (this.bootsT > 0) this.bootsT -= dt;
+    if (this.jetT > 0) this.jetT -= dt;
+    if (this.boostT > 0) this.boostT -= dt;
+    if (this.boardT > 0) {
+      this.boardT -= dt;
+      if (this.boardT <= 0) this.boardHits = 0;
+    }
+    if (this.comboT > 0) {
+      this.comboT -= dt;
+      if (this.comboT <= 0) this.combo = 0;
+    }
+  }
+
+  /** Distance is doubled by the espresso. Coins, poutine and proches also take the combo. */
+  private gain(base: number) {
+    this.scoreAcc += base * this.scoreMult();
+  }
+
+  private comboMult() {
+    if (this.combo >= 12) return 5;
+    if (this.combo >= 8) return 4;
+    if (this.combo >= 5) return 3;
+    if (this.combo >= 3) return 2;
+    return 1;
+  }
+
+  private scoreMult() {
+    return this.comboMult() * (this.boostT > 0 ? 2 : 1);
+  }
+
+  private chain() {
+    if (this.phase !== "playing") return;
+    const prev = this.comboMult();
+    this.combo += 1;
+    this.comboT = 2.6;
+    const next = this.comboMult();
+    if (next > prev) {
+      this.callout = `x${next}`;
+      this.calloutT = 0.65;
+    }
+  }
+
+  private rollMissions() {
+    const bag = MISSION_DEFS.slice();
+    const picked: MissionDef[] = [];
+    const used = new Set<MissionId>();
+    let guard = 0;
+    while (picked.length < 3 && bag.length && guard < 24) {
+      guard += 1;
+      const j = Math.floor(this.rng() * bag.length);
+      const mission = bag.splice(j, 1)[0];
+      if (used.has(mission.id)) continue;
+      used.add(mission.id);
+      picked.push(mission);
+    }
+    const ease = (mission: MissionDef) => {
+      if (mission.id === "power") return 0;
+      if (mission.id === "nears") return mission.goal;
+      if (mission.id === "coins") return mission.goal / 4;
+      if (mission.id === "meters") return mission.goal / 80;
+      return 5;
+    };
+    picked.sort((a, b) => ease(a) - ease(b));
+    return picked;
+  }
+
+  private snapMissionBase() {
+    this.missionBaseMeters = this.meters;
+    this.missionBaseCoins = this.coins;
+    this.missionBaseNears = this.nears;
+    this.missionBasePowers = this.powersUsed;
+  }
+
+  private missionNow(mission: MissionDef) {
+    if (mission.id === "meters") return Math.floor(this.meters - this.missionBaseMeters);
+    if (mission.id === "coins") return this.coins - this.missionBaseCoins;
+    if (mission.id === "nears") return this.nears - this.missionBaseNears;
+    if (mission.id === "power") return this.powersUsed - this.missionBasePowers;
+    return this.combo < 3 ? 0 : this.comboMult();
+  }
+
+  private missionHud(): MissionHud | null {
+    const mission = this.missions[this.missionI];
+    if (!mission || this.phase === "attract") return null;
+    const progress = Math.max(0, this.missionNow(mission));
+    return {
+      label: mission.label,
+      progress: Math.min(mission.goal, progress),
+      goal: mission.goal,
+      index: this.missionI + 1,
+      total: this.missions.length,
+    };
+  }
+
+  private tickMissions() {
+    const mission = this.missions[this.missionI];
+    if (!mission) return;
+    if (this.missionNow(mission) < mission.goal) return;
+    const bonus = 120 * (this.missionI + 1);
+    this.scoreAcc += bonus;
+    this.missionI += 1;
+    this.snapMissionBase();
+    this.callout = `MISSION +${bonus}`;
+    this.calloutT = 1.15;
+    this.sfx.rich();
+  }
+
+  private patternWeight(pattern: Pattern) {
+    const spice = pattern.spice ?? (pattern.min >= 240 ? 2 : pattern.min >= 80 ? 1 : 0);
+    const depth = this.phase === "playing" ? Math.min(1, this.meters / 800) : 0;
+    return 1 + spice * depth * 1.25;
+  }
+
+  private pickWeighted(list: Pattern[]) {
+    if (!list.length) return PATTERNS[0];
+    let total = 0;
+    const weights = list.map((pattern) => {
+      const weight = this.patternWeight(pattern);
+      total += weight;
+      return weight;
+    });
+    let roll = this.rng() * total;
+    for (let i = 0; i < list.length; i += 1) {
+      roll -= weights[i];
+      if (roll <= 0) return list[i];
+    }
+    return list[list.length - 1];
   }
 
   private updatePlayer(dt: number, sdt: number) {
@@ -928,8 +1232,8 @@ export class ConeGame {
 
     if (this.jumpBuffer > 0) {
       this.jumpBuffer -= dt;
-      if (this.grounded) {
-        this.vy = 8.3;
+      if (this.grounded && this.jetT <= 0) {
+        this.vy = this.bootsT > 0 ? 11.6 : 8.3;
         this.grounded = false;
         this.sliding = 0;
         this.slideBuffer = 0;
@@ -956,6 +1260,12 @@ export class ConeGame {
       this.y = 0;
       this.vy = 0;
       this.grounded = true;
+    }
+    if (this.jetT > 0) {
+      this.y += (1.18 - this.y) * Math.min(1, sdt * 8);
+      this.vy = 0;
+      this.grounded = false;
+      this.sliding = 0;
     }
     this.player.position.y = this.y;
     const goal = this.laneTarget * LANE;
@@ -1069,7 +1379,7 @@ export class ConeGame {
   private updateFloaters() {
     for (const e of this.ents) {
       if (!e.alive) continue;
-      if (e.kind === "coin" || e.kind === "poutine" || e.kind === "hat" || e.kind === "magnet") {
+      if (isPickup(e.kind)) {
         e.mesh.rotation.y = this.time * 1.8 + e.z;
         e.mesh.position.y = 0.08 + Math.sin(this.time * 3.4 + e.x * 2) * 0.08;
       }
@@ -1077,7 +1387,7 @@ export class ConeGame {
         e.x += (this.player.position.x - e.x) * 0.18;
         e.z += Math.min(0.35, Math.max(0, -e.z) * 0.08);
       }
-      if (e.kind === "coin" || e.kind === "poutine" || e.kind === "hat" || e.kind === "magnet") {
+      if (isPickup(e.kind)) {
         e.mesh.position.x = e.x;
         e.mesh.position.z = e.z;
       }
@@ -1098,12 +1408,15 @@ export class ConeGame {
   private noteCross(e: Ent, prev: number) {
     if (this.phase !== "playing" || e.scored) return;
     if (!(prev < 0 && e.z >= 0)) return;
-    if (e.kind === "coin" || e.kind === "poutine" || e.kind === "hat" || e.kind === "magnet") return;
+    if (isPickup(e.kind)) return;
     const dx = Math.abs(e.x - this.player.position.x);
     if (dx > 0.82 && dx < 1.2) {
       e.scored = true;
       this.nears += 1;
-      this.callout = "PROCHE";
+      this.chain();
+      this.gain(25);
+      const mult = this.comboMult();
+      this.callout = mult > 1 ? `PROCHE x${mult}` : "PROCHE";
       this.calloutT = 0.7;
       this.sfx.near();
       if (!this.reduceMotion) this.shake = Math.max(this.shake, 0.08);
@@ -1119,17 +1432,32 @@ export class ConeGame {
       const reach =
         e.kind === "truck" ? 1.65 : e.kind === "pit" ? 0.95 : e.kind === "barrier" ? 0.7 : e.kind === "pillar" ? 0.55 : 0.62;
       if (Math.abs(e.z) > reach) continue;
-      const pickup = e.kind === "coin" || e.kind === "poutine" || e.kind === "hat" || e.kind === "magnet";
-      if (pickup) {
+      if (isPickup(e.kind)) {
         if (dx > 0.85) continue;
         this.collect(e);
         continue;
       }
       if (dx > 0.78) continue;
+      if (this.jetT > 0 && e.kind !== "pillar") continue;
       if (e.kind === "pit" && this.y > 0.5) continue;
       if (e.kind === "barrier" && this.y > 0.55) continue;
       if ((e.kind === "scaffold" || e.kind === "sign") && this.sliding > 0.02) continue;
       if (e.kind === "cone" && this.y > 1.25) continue;
+      if (e.kind === "truck" && this.bootsT > 0 && this.y > 1.45) continue;
+      if (this.boardHits > 0) {
+        this.boardHits -= 1;
+        if (this.boardHits <= 0) this.boardT = 0;
+        this.invuln = 0.45;
+        this.hitstop = 0.06;
+        this.shake = Math.max(this.shake, 0.28);
+        this.callout = this.boardHits > 0 ? "PLANCHE" : "PLANCHE CASSÉE";
+        this.calloutT = 0.8;
+        this.sfx.smack();
+        this.burst(e.x, 0.8, e.z, 0xc4a574, 10, 3);
+        this.release(e);
+        if (navigator.vibrate) navigator.vibrate(16);
+        return;
+      }
       if (this.hat) {
         this.hat = false;
         this.invuln = 1.2;
@@ -1149,26 +1477,60 @@ export class ConeGame {
   }
 
   private collect(e: Ent) {
+    this.chain();
     if (e.kind === "coin") {
       this.coins += 1;
+      this.gain(10);
       this.sfx.coin();
       this.burst(e.x, 0.8, e.z, 0xfff6ea, 4, 1.4);
     } else if (e.kind === "poutine") {
       this.coins += 5;
+      this.gain(50);
       this.sfx.rich();
       this.callout = "POUTINE +5";
       this.calloutT = 0.8;
       this.burst(e.x, 0.8, e.z, 0xf2d15a, 8, 2);
     } else if (e.kind === "hat") {
       this.hat = true;
+      this.powersUsed += 1;
       this.sfx.power();
       this.callout = "CASQUE";
       this.calloutT = 0.9;
     } else if (e.kind === "magnet") {
       this.magnetT = 8;
+      this.powersUsed += 1;
       this.sfx.power();
       this.callout = "AIMANT";
       this.calloutT = 0.9;
+    } else if (e.kind === "boots") {
+      this.bootsT = 8;
+      this.powersUsed += 1;
+      this.sfx.power();
+      this.callout = "BOTTES";
+      this.calloutT = 0.9;
+      this.burst(e.x, 0.4, e.z, 0xffe14a, 6, 2);
+    } else if (e.kind === "board") {
+      this.boardT = 8;
+      this.boardHits = 3;
+      this.powersUsed += 1;
+      this.sfx.power();
+      this.callout = "PLANCHE";
+      this.calloutT = 0.9;
+    } else if (e.kind === "jet") {
+      this.jetT = 5;
+      this.powersUsed += 1;
+      this.sliding = 0;
+      this.sfx.power();
+      this.callout = "BONBONNE";
+      this.calloutT = 0.9;
+      this.burst(e.x, 0.9, e.z, 0xff8a1f, 8, 2.4);
+    } else if (e.kind === "boost") {
+      this.boostT = 8;
+      this.powersUsed += 1;
+      this.sfx.power();
+      this.callout = "DOUBLE x2";
+      this.calloutT = 0.9;
+      this.burst(e.x, 0.9, e.z, 0xf2d15a, 8, 2);
     }
     if (navigator.vibrate && (e.kind === "coin" || e.kind === "poutine")) navigator.vibrate(8);
     this.release(e);
@@ -1185,7 +1547,7 @@ export class ConeGame {
     this.sfx.fadeOut(0.35);
     this.sfx.fail();
     this.burst(e.x, 0.9, 0, 0xff5a1f, 18, 4.2);
-    const score = Math.floor(this.meters) + this.coins * 10 + this.nears * 25;
+    const score = Math.floor(this.scoreAcc);
     if (score > this.best) {
       this.best = score;
       this.newBest = true;
@@ -1201,7 +1563,7 @@ export class ConeGame {
     let bestD = 1e9;
     for (const e of this.ents) {
       if (!e.alive) continue;
-      if (e.kind === "coin" || e.kind === "poutine" || e.kind === "hat" || e.kind === "magnet") continue;
+      if (isPickup(e.kind)) continue;
       if (e.z > -0.4 || e.z < -this.speed * 1.35) continue;
       if (Math.abs(e.x - this.player.position.x) > 0.9) continue;
       const d = -e.z;
@@ -1229,7 +1591,7 @@ export class ConeGame {
     const x = lane * LANE;
     for (const e of this.ents) {
       if (!e.alive) continue;
-      if (e.kind === "coin" || e.kind === "poutine" || e.kind === "hat" || e.kind === "magnet") continue;
+      if (isPickup(e.kind)) continue;
       if (Math.abs(e.z - zRef) > 2.4) continue;
       if (Math.abs(e.x - x) < 0.8) return true;
     }
@@ -1254,12 +1616,12 @@ export class ConeGame {
     if (this.script.length) return this.script.shift()!;
     // Spawn a little before the mouth so the first columns are waiting inside it, not on the street.
     if (this.phase === "playing" && this.scenic >= SUBWAY_AT_M - 70) {
-      return SUBWAY_PATTERNS[Math.floor(this.rng() * SUBWAY_PATTERNS.length)];
+      return this.pickWeighted(SUBWAY_PATTERNS);
     }
     const pool = PATTERNS.filter((p) => this.meters >= p.min || this.phase === "attract");
     const usable = (this.phase === "attract" ? PATTERNS.filter((p) => p.min === 0) : pool);
     const pickFrom = usable.length ? usable : PATTERNS;
-    return pickFrom[Math.floor(this.rng() * pickFrom.length)];
+    return this.pickWeighted(pickFrom);
   }
 
   private spawn(kind: Kind, lane: number, z: number, hint?: string) {
@@ -1318,6 +1680,10 @@ export class ConeGame {
       "poutine",
       "hat",
       "magnet",
+      "boots",
+      "board",
+      "jet",
+      "boost",
     ];
     for (let i = 0; i < 52; i += 1) {
       const mesh = new THREE.Group();
@@ -2334,8 +2700,133 @@ export class ConeGame {
       const r = new THREE.Mesh(this.geo(new THREE.BoxGeometry(0.08, 0.16, 0.1)), tipMat);
       r.position.set(0.22, 0.7, 0);
       g.add(u, l, r);
+    } else if (kind === "boots") {
+      const leather = this.lambert("#f0b429", 0.45);
+      const toe = this.lambert("#1e1e22", 0.4);
+      for (const x of [-0.12, 0.12]) {
+        const boot = new THREE.Mesh(this.geo(new THREE.BoxGeometry(0.16, 0.14, 0.28)), leather);
+        boot.position.set(x, 0.62, 0);
+        const cap = new THREE.Mesh(this.geo(new THREE.BoxGeometry(0.16, 0.08, 0.1)), toe);
+        cap.position.set(x, 0.6, 0.1);
+        g.add(boot, cap);
+      }
+    } else if (kind === "board") {
+      const deck = new THREE.Mesh(this.geo(new THREE.BoxGeometry(0.78, 0.05, 0.26)), this.lambert("#c4a574", 0.55));
+      deck.position.y = 0.7;
+      const band = new THREE.Mesh(this.geo(new THREE.BoxGeometry(0.8, 0.02, 0.08)), this.lambert("#ff5a1f", 0.4));
+      band.position.y = 0.74;
+      g.add(deck, band);
+    } else if (kind === "jet") {
+      const tankMat = this.lambert("#ff5a1f", 0.4);
+      const metal = this.lambert("#d5d8dd", 0.25);
+      const left = new THREE.Mesh(this.geo(new THREE.CylinderGeometry(0.08, 0.08, 0.32, 8)), tankMat);
+      left.position.set(-0.1, 0.78, 0);
+      const right = new THREE.Mesh(this.geo(new THREE.CylinderGeometry(0.08, 0.08, 0.32, 8)), tankMat);
+      right.position.set(0.1, 0.78, 0);
+      const valve = new THREE.Mesh(this.geo(new THREE.BoxGeometry(0.28, 0.06, 0.08)), metal);
+      valve.position.y = 0.96;
+      g.add(left, right, valve);
+    } else if (kind === "boost") {
+      const cup = new THREE.Mesh(this.geo(new THREE.CylinderGeometry(0.15, 0.12, 0.3, 10)), this.lambert("#f7f4ef"));
+      cup.position.y = 0.7;
+      const sleeve = new THREE.Mesh(this.geo(new THREE.CylinderGeometry(0.165, 0.14, 0.12, 10)), this.lambert("#f2d15a"));
+      sleeve.position.y = 0.68;
+      const card = new THREE.Mesh(this.geo(new THREE.PlaneGeometry(0.36, 0.18)), this.boostCardMat());
+      card.position.set(0, 1.02, 0);
+      g.add(cup, sleeve, card);
     }
     return g;
+  }
+
+  private boostCardMat() {
+    if (this.boostMat) return this.boostMat;
+    const canvas = document.createElement("canvas");
+    canvas.width = 128;
+    canvas.height = 64;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      this.boostMat = this.mat(new THREE.MeshStandardMaterial({ color: 0xf2d15a, roughness: 0.4 }));
+      return this.boostMat;
+    }
+    ctx.fillStyle = "#1a120c";
+    ctx.fillRect(0, 0, 128, 64);
+    ctx.fillStyle = "#ff5a1f";
+    ctx.fillRect(0, 0, 128, 12);
+    ctx.fillStyle = "#fff6ea";
+    ctx.font = "700 42px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("x2", 64, 40);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    this.texs.push(tex);
+    this.boostMat = this.mat(
+      new THREE.MeshStandardMaterial({ map: tex, color: 0xffffff, roughness: 0.4, side: THREE.DoubleSide }),
+    );
+    return this.boostMat;
+  }
+
+  private buildGear() {
+    const wood = this.lambert("#c4a574", 0.6);
+    const stripe = this.lambert("#ff5a1f", 0.4);
+    this.boardMesh = new THREE.Group();
+    const deck = new THREE.Mesh(this.geo(new THREE.BoxGeometry(0.72, 0.045, 0.28)), wood);
+    deck.position.y = 0.05;
+    const band = new THREE.Mesh(this.geo(new THREE.BoxGeometry(0.74, 0.018, 0.08)), stripe);
+    band.position.y = 0.08;
+    this.boardMesh.add(deck, band);
+    this.boardMesh.visible = false;
+
+    this.jetMesh = new THREE.Group();
+    const tankMat = this.lambert("#ff5a1f", 0.45);
+    const metal = this.lambert("#d5d8dd", 0.3);
+    const tankL = new THREE.Mesh(this.geo(new THREE.CylinderGeometry(0.065, 0.065, 0.26, 8)), tankMat);
+    tankL.position.set(-0.12, 1.02, 0.16);
+    const tankR = new THREE.Mesh(this.geo(new THREE.CylinderGeometry(0.065, 0.065, 0.26, 8)), tankMat);
+    tankR.position.set(0.12, 1.02, 0.16);
+    const nozzle = new THREE.Mesh(this.geo(new THREE.BoxGeometry(0.28, 0.05, 0.08)), metal);
+    nozzle.position.set(0, 0.88, 0.18);
+    const flameMat = this.mat(new THREE.MeshBasicMaterial({ color: 0xffb020, transparent: true, opacity: 0.9 }));
+    this.flameL = new THREE.Mesh(this.geo(new THREE.ConeGeometry(0.055, 0.2, 6)), flameMat);
+    this.flameL.position.set(-0.12, 0.76, 0.16);
+    this.flameL.rotation.x = Math.PI;
+    this.flameR = new THREE.Mesh(this.geo(new THREE.ConeGeometry(0.055, 0.2, 6)), flameMat);
+    this.flameR.position.set(0.12, 0.76, 0.16);
+    this.flameR.rotation.x = Math.PI;
+    this.flameL.castShadow = false;
+    this.flameR.castShadow = false;
+    this.jetMesh.add(tankL, tankR, nozzle, this.flameL, this.flameR);
+    this.jetMesh.visible = false;
+
+    const glowMat = this.mat(
+      new THREE.MeshBasicMaterial({
+        color: 0xffe14a,
+        transparent: true,
+        opacity: 0.75,
+        side: THREE.DoubleSide,
+      }),
+    );
+    this.bootGlow = new THREE.Mesh(this.geo(new THREE.RingGeometry(0.16, 0.32, 16)), glowMat);
+    this.bootGlow.rotation.x = -Math.PI / 2;
+    this.bootGlow.position.y = 0.04;
+    this.bootGlow.visible = false;
+    this.bootGlow.castShadow = false;
+
+    this.visual.add(this.boardMesh, this.jetMesh, this.bootGlow);
+  }
+
+  private updateGear() {
+    const riding = this.boardHits > 0 && this.phase !== "dead";
+    const flying = this.jetT > 0 && this.phase !== "dead";
+    this.boardMesh.visible = riding;
+    this.jetMesh.visible = flying;
+    this.bootGlow.visible = this.bootsT > 0 && this.phase !== "dead" && this.y < 0.25;
+    if (flying) {
+      const flicker = 0.65 + Math.abs(Math.sin(this.time * 42)) * 0.55;
+      this.flameL.scale.y = flicker;
+      this.flameR.scale.y = 1.2 - flicker * 0.35;
+    }
+    if (this.bootGlow.visible) this.bootGlow.scale.setScalar(1 + Math.sin(this.time * 14) * 0.08);
   }
 
   private buildPlayer() {
