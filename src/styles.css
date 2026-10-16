@@ -1,0 +1,36 @@
+@import "tailwindcss";
+@import "@fontsource/archivo-black/latin-400.css";
+@import "@fontsource/outfit/latin-400.css";
+@import "@fontsource/outfit/latin-600.css";
+@import "@fontsource/outfit/latin-700.css";
+
+@theme {
+  --color-bg: #14110e;
+  --color-surface: #241c16;
+  --color-fg: #f6f0e6;
+  --color-muted: #b7a898;
+  --color-orange: #ff5a1f;
+  --color-yellow: #ffc83d;
+  --color-line: #3d3229;
+  --font-display: "Archivo Black", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Outfit", ui-sans-serif, system-ui, sans-serif;
+}
+
+@layer base {
+  html,
+  body {
+    height: 100%;
+    background: var(--color-bg);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+  }
+  body {
+    margin: 0;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+}
